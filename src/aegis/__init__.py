@@ -6,4 +6,5 @@ and remediate infrastructure incidents with shadow mode verification.
 
 from aegis.version import __version__
 
+
 __all__ = ["__version__"]

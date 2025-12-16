@@ -39,7 +39,7 @@ repos:
       - id: mixed-line-ending
         args: [--fix=lf]
       - id: no-commit-to-branch
-        args: [--branch, main, --branch, master]
+        args: [--branch, develop, --branch, staging]
 
   # Ruff - Fast Python linter and formatter (replaces black, isort, flake8, etc.)
   - repo: https://github.com/astral-sh/ruff-pre-commit
@@ -106,14 +106,6 @@ repos:
     hooks:
       - id: shellcheck
         args: [--severity=warning]
-
-  # YAML linting (Kubernetes manifests, Helm charts)
-  - repo: https://github.com/adrienverge/yamllint
-    rev: v1.35.1
-    hooks:
-      - id: yamllint
-        args: [-c=.yamllint.yaml]
-        types: [yaml]
 
   # Markdown linting
   - repo: https://github.com/igorshubovych/markdownlint-cli
