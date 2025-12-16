@@ -1,0 +1,60 @@
+{
+  "recommendations": [
+    // Python Core
+    "ms-python.python",
+    "ms-python.vscode-pylance",
+    "charliermarsh.ruff",
+
+    // Python Testing & Debugging
+    "ms-python.debugpy",
+
+    // YAML & TOML
+    "redhat.vscode-yaml",
+    "tamasfe.even-better-toml",
+
+    // Kubernetes & Docker
+    "ms-kubernetes-tools.vscode-kubernetes-tools",
+    "ms-azuretools.vscode-docker",
+
+    // Git
+    "eamodio.gitlens",
+    "mhutchie.git-graph",
+
+    // Formatting & Editing
+    "esbenp.prettier-vscode",
+    "editorconfig.editorconfig",
+
+    // Spell Checking
+    "streetsidesoftware.code-spell-checker",
+
+    // Dev Containers
+    "ms-vscode-remote.remote-containers",
+
+    // Markdown
+    "yzhang.markdown-all-in-one",
+    "davidanson.vscode-markdownlint",
+
+    // Terraform (if used)
+    "hashicorp.terraform",
+
+    // Copilot
+    "github.copilot",
+    "github.copilot-chat",
+
+    // Jinja (for templates)
+    "wholroyd.jinja",
+
+    // DotEnv
+    "mikestead.dotenv",
+
+    // Error Lens (inline errors)
+    "usernamehw.errorlens"
+  ],
+  "unwantedRecommendations": [
+    // Avoid conflicts with ruff
+    "ms-python.black-formatter",
+    "ms-python.isort",
+    "ms-python.flake8",
+    "ms-python.pylint"
+  ]
+}

@@ -1,0 +1,276 @@
+# =============================================================================
+# AEGIS Team GPU Configuration
+# =============================================================================
+# This file defines GPU profiles for all team members.
+# The system automatically detects and configures based on available hardware.
+# =============================================================================
+
+team:
+  name: "AEGIS Development Team"
+  size: 5
+  composition:
+    data_scientists: 3
+    security_engineers: 2
+
+# =============================================================================
+# Team Member GPU Profiles
+# =============================================================================
+profiles:
+  # ---------------------------------------------------------------------------
+  # Data Scientist 1 - Strong GPU (6GB VRAM)
+  # ---------------------------------------------------------------------------
+  data_scientist_1:
+    role: "data_scientist"
+    gpu:
+      available: true
+      vendor: "nvidia"
+      vram_gb: 6
+      # Likely RTX 2060, RTX 3050, RTX 4050, or similar
+      estimated_models:
+        - "RTX 2060"
+        - "RTX 3050"
+        - "RTX 4050"
+    recommended_models:
+      primary: "llama3.2:3b"           # 3B model fits well in 6GB
+      fallback: "mistral:7b-q4_K_M"    # Quantized 7B as fallback
+      code: "deepseek-coder:1.3b"       # Lightweight code model
+    ollama_config:
+      num_gpu: 1
+      num_thread: 8
+      context_length: 4096
+    mode: "local_gpu"
+
+  # ---------------------------------------------------------------------------
+  # Data Scientist 2 - Strong GPU (8GB VRAM)
+  # ---------------------------------------------------------------------------
+  data_scientist_2:
+    role: "data_scientist"
+    gpu:
+      available: true
+      vendor: "nvidia"
+      vram_gb: 8
+      # Likely RTX 3060 Ti, RTX 3070, RTX 4060, or similar
+      estimated_models:
+        - "RTX 3060 Ti"
+        - "RTX 3070"
+        - "RTX 4060"
+    recommended_models:
+      primary: "llama3.1:8b-q4_K_M"    # Quantized 8B fits in 8GB
+      fallback: "mistral:7b"            # Standard 7B
+      code: "codellama:7b-q4_K_M"       # Quantized CodeLlama
+    ollama_config:
+      num_gpu: 1
+      num_thread: 8
+      context_length: 8192
+    mode: "local_gpu"
+
+  # ---------------------------------------------------------------------------
+  # Data Scientist 3 (You) - Intel Iris Xe (iGPU)
+  # ---------------------------------------------------------------------------
+  data_scientist_3:
+    role: "data_scientist_lead"
+    gpu:
+      available: false  # No discrete NVIDIA GPU
+      vendor: "intel"
+      type: "integrated"
+      model: "Intel Iris Xe"
+      vram_gb: 0  # Shared memory
+    recommended_models:
+      # Cloud APIs - Zero cost options
+      primary_api: "groq"               # Fastest, 30 req/min free
+      secondary_api: "google_gemini"    # Large context, free tier
+      tertiary_api: "together_ai"       # Good for code
+    cloud_config:
+      groq:
+        model: "llama-3.3-70b-versatile"
+        rate_limit: 30  # requests per minute
+      google_gemini:
+        model: "gemini-2.0-flash"
+        rate_limit: 60
+    mode: "cloud_api"
+    notes: |
+      No local GPU inference. Uses cloud APIs (free tiers).
+      Ollama can still run but CPU-only (slow).
+      Consider using Groq for fastest responses.
+
+  # ---------------------------------------------------------------------------
+  # Security Engineer 1 - NVIDIA GPU (Unknown VRAM)
+  # ---------------------------------------------------------------------------
+  security_engineer_1:
+    role: "security_engineer"
+    gpu:
+      available: true
+      vendor: "nvidia"
+      vram_gb: null  # Unknown - will be auto-detected
+      auto_detect: true
+    recommended_models:
+      # Conservative defaults until VRAM is known
+      primary: "llama3.2:3b"            # Safe for any NVIDIA GPU
+      fallback: "mistral:7b-q4_0"       # Heavily quantized
+      security: "codellama:7b-instruct" # For security analysis
+    ollama_config:
+      num_gpu: 1
+      num_thread: 4
+      context_length: 4096
+    mode: "local_gpu"
+    notes: |
+      GPU VRAM unknown. Run 'make gpu-check' to detect.
+      Configuration will be updated automatically.
+
+  # ---------------------------------------------------------------------------
+  # Security Engineer 2 - No dedicated GPU
+  # ---------------------------------------------------------------------------
+  security_engineer_2:
+    role: "security_engineer"
+    gpu:
+      available: false
+      vendor: null
+    recommended_models:
+      primary_api: "groq"
+      secondary_api: "google_gemini"
+    mode: "cloud_api"
+
+# =============================================================================
+# Model Catalog - Organized by VRAM Requirements
+# =============================================================================
+model_catalog:
+  # Under 4GB VRAM
+  small:
+    - name: "llama3.2:1b"
+      vram_required: 2
+      parameters: "1B"
+      use_case: "Fast inference, simple tasks"
+    - name: "deepseek-coder:1.3b"
+      vram_required: 2
+      parameters: "1.3B"
+      use_case: "Code completion"
+    - name: "phi3:mini"
+      vram_required: 3
+      parameters: "3.8B"
+      use_case: "General purpose, efficient"
+
+  # 4-6GB VRAM
+  medium:
+    - name: "llama3.2:3b"
+      vram_required: 4
+      parameters: "3B"
+      use_case: "Balanced performance"
+    - name: "mistral:7b-q4_0"
+      vram_required: 5
+      parameters: "7B (Q4)"
+      use_case: "Quantized for smaller GPUs"
+    - name: "codellama:7b-q4_K_M"
+      vram_required: 5
+      parameters: "7B (Q4)"
+      use_case: "Code generation"
+
+  # 6-8GB VRAM
+  large:
+    - name: "mistral:7b"
+      vram_required: 6
+      parameters: "7B"
+      use_case: "General purpose"
+    - name: "llama3.1:8b-q4_K_M"
+      vram_required: 6
+      parameters: "8B (Q4)"
+      use_case: "Latest Llama, quantized"
+    - name: "codellama:7b-instruct"
+      vram_required: 7
+      parameters: "7B"
+      use_case: "Code with instructions"
+
+  # 8-12GB VRAM
+  xl:
+    - name: "llama3.1:8b"
+      vram_required: 10
+      parameters: "8B"
+      use_case: "Full precision Llama 3.1"
+    - name: "deepseek-coder:6.7b"
+      vram_required: 8
+      parameters: "6.7B"
+      use_case: "Advanced code generation"
+    - name: "mixtral:8x7b-q4_K_M"
+      vram_required: 12
+      parameters: "8x7B (Q4)"
+      use_case: "MoE model, high quality"
+
+# =============================================================================
+# Cloud API Configuration (Free Tiers)
+# =============================================================================
+cloud_apis:
+  groq:
+    description: "Fastest inference, generous free tier"
+    free_tier:
+      requests_per_minute: 30
+      tokens_per_day: 14400
+    models:
+      - "llama-3.3-70b-versatile"
+      - "llama-3.1-8b-instant"
+      - "mixtral-8x7b-32768"
+    env_var: "GROQ_API_KEY"
+    signup_url: "https://console.groq.com/"
+
+  google_gemini:
+    description: "Large context window, free tier"
+    free_tier:
+      requests_per_minute: 60
+      tokens_per_day: 1500000
+    models:
+      - "gemini-2.0-flash"
+      - "gemini-1.5-flash"
+    env_var: "GOOGLE_API_KEY"
+    signup_url: "https://aistudio.google.com/apikey"
+
+  together_ai:
+    description: "Good for code, $5 free credit"
+    free_tier:
+      initial_credit: 5.00
+    models:
+      - "meta-llama/Llama-3.3-70B-Instruct-Turbo"
+      - "codellama/CodeLlama-34b-Instruct-hf"
+    env_var: "TOGETHER_API_KEY"
+    signup_url: "https://api.together.xyz/"
+
+# =============================================================================
+# Auto-Detection Script Configuration
+# =============================================================================
+auto_detection:
+  enabled: true
+  on_startup: true
+  update_config: true
+  fallback_to_cloud: true
+
+  detection_commands:
+    nvidia: "nvidia-smi --query-gpu=name,memory.total --format=csv,noheader"
+    cuda: "nvcc --version"
+    ollama: "ollama --version"
+
+  vram_thresholds:
+    # Minimum VRAM for each tier
+    tier_small: 2
+    tier_medium: 4
+    tier_large: 6
+    tier_xl: 8
+    tier_xxl: 12
+
+# =============================================================================
+# LLM Router Configuration
+# =============================================================================
+llm_router:
+  # Priority order for LLM selection
+  priority:
+    - local_gpu    # First try local GPU
+    - cloud_api    # Fallback to cloud APIs
+    - local_cpu    # Last resort: CPU inference
+
+  # Load balancing for cloud APIs
+  cloud_load_balancing:
+    strategy: "round_robin"
+    health_check_interval: 60
+
+  # Automatic fallback settings
+  fallback:
+    enabled: true
+    max_retries: 3
+    retry_delay: 1.0
+    timeout: 30.0

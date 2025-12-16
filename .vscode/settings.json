@@ -1,0 +1,145 @@
+{
+  // Python Configuration
+  "python.defaultInterpreterPath": "${workspaceFolder}/.venv/bin/python",
+  "python.terminal.activateEnvironment": true,
+
+  // Ruff - Primary linter and formatter
+  "[python]": {
+    "editor.defaultFormatter": "charliermarsh.ruff",
+    "editor.formatOnSave": true,
+    "editor.codeActionsOnSave": {
+      "source.fixAll.ruff": "explicit",
+      "source.organizeImports.ruff": "explicit"
+    }
+  },
+
+  // Type checking with Pylance
+  "python.analysis.typeCheckingMode": "standard",
+  "python.analysis.diagnosticMode": "workspace",
+  "python.analysis.autoImportCompletions": true,
+  "python.analysis.inlayHints.functionReturnTypes": true,
+  "python.analysis.inlayHints.variableTypes": true,
+
+  // Testing
+  "python.testing.pytestEnabled": true,
+  "python.testing.unittestEnabled": false,
+  "python.testing.pytestArgs": [
+    "tests",
+    "-v",
+    "--tb=short"
+  ],
+
+  // Editor settings
+  "editor.rulers": [88, 120],
+  "editor.tabSize": 4,
+  "editor.insertSpaces": true,
+  "editor.trimAutoWhitespace": true,
+  "files.trimTrailingWhitespace": true,
+  "files.insertFinalNewline": true,
+  "files.trimFinalNewlines": true,
+
+  // YAML (for Kubernetes manifests)
+  "[yaml]": {
+    "editor.defaultFormatter": "redhat.vscode-yaml",
+    "editor.tabSize": 2,
+    "editor.autoIndent": "full"
+  },
+
+  // TOML
+  "[toml]": {
+    "editor.defaultFormatter": "tamasfe.even-better-toml",
+    "editor.tabSize": 4
+  },
+
+  // Markdown
+  "[markdown]": {
+    "editor.wordWrap": "on",
+    "editor.quickSuggestions": {
+      "other": "on",
+      "comments": "off",
+      "strings": "off"
+    }
+  },
+
+  // JSON
+  "[json]": {
+    "editor.defaultFormatter": "esbenp.prettier-vscode"
+  },
+  "[jsonc]": {
+    "editor.defaultFormatter": "esbenp.prettier-vscode"
+  },
+
+  // File associations
+  "files.associations": {
+    "*.yaml": "yaml",
+    "*.yml": "yaml",
+    "Dockerfile*": "dockerfile",
+    ".env*": "dotenv",
+    "*.j2": "jinja",
+    "*.jinja2": "jinja"
+  },
+
+  // Kubernetes
+  "vs-kubernetes": {
+    "vs-kubernetes.kubeconfig": "${env:HOME}/.kube/config",
+    "vs-kubernetes.kubectl-path": "kubectl"
+  },
+
+  // YAML Schema associations for Kubernetes
+  "yaml.schemas": {
+    "kubernetes": [
+      "deploy/kustomize/**/*.yaml",
+      "deploy/helm/**/*.yaml"
+    ]
+  },
+
+  // Git
+  "git.enableSmartCommit": true,
+  "git.confirmSync": false,
+  "git.autofetch": true,
+
+  // Search exclusions
+  "search.exclude": {
+    "**/node_modules": true,
+    "**/bower_components": true,
+    "**/.venv": true,
+    "**/venv": true,
+    "**/__pycache__": true,
+    "**/.mypy_cache": true,
+    "**/.ruff_cache": true,
+    "**/.pytest_cache": true,
+    "**/htmlcov": true,
+    "**/dist": true,
+    "**/build": true,
+    "**/*.egg-info": true,
+    "**/.git": true
+  },
+
+  // Files to hide in explorer
+  "files.exclude": {
+    "**/__pycache__": true,
+    "**/.mypy_cache": true,
+    "**/.ruff_cache": true,
+    "**/.pytest_cache": true,
+    "**/*.pyc": true
+  },
+
+  // Spell checker
+  "cSpell.words": [
+    "AEGIS",
+    "kopf",
+    "kube",
+    "kubectl",
+    "kubernetes",
+    "kubeconfig",
+    "langgraph",
+    "langchain",
+    "ollama",
+    "opentelemetry",
+    "pydantic",
+    "asyncio",
+    "coroutine",
+    "structlog",
+    "unifonic"
+  ]
+}
