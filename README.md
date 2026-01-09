@@ -52,6 +52,7 @@ make setup
 ```
 
 ✅ This single command does everything:
+
 - ✓ Installs all Python dependencies (production + development)
 - ✓ Creates `.env` file from template
 - ✓ Installs pre-commit git hooks
@@ -113,11 +114,13 @@ make run-operator
 ### GPU Requirements (Optional but Recommended)
 
 **For Local Development (2 teammates):**
+
 - NVIDIA GPU with 8GB+ VRAM
 - CUDA 12.0+ drivers
 - Docker with NVIDIA Container Toolkit
 
 **For Cloud API Development (1 teammate):**
+
 - No GPU required!
 - Free API keys from:
   - **Groq** (fastest, 30 req/min free) - Recommended
@@ -125,6 +128,7 @@ make run-operator
   - Optional: OpenAI, Anthropic, DeepSeek for paid fallback
 
 **Tested Configurations:**
+
 - RTX 3060 (12GB) - ✅ Excellent (local Ollama)
 - RTX 3070 (8GB) - ✅ Good (quantized models)
 - RTX 4060 (8GB) - ✅ Good (quantized models)
@@ -133,6 +137,7 @@ make run-operator
 ### Kubernetes Cluster
 
 **Local Development:**
+
 ```bash
 # Option 1: k3s (lightweight)
 curl -sfL https://get.k3s.io | sh -
@@ -145,6 +150,7 @@ kind create cluster --config deploy/kind-config.yaml
 ```
 
 **Production:**
+
 - GKE, EKS, AKS, or any CNCF-certified Kubernetes
 - Minimum 3 nodes with 8GB RAM each
 - GPU nodes optional but recommended
@@ -287,6 +293,7 @@ git commit --no-verify
 ```
 
 **What gets checked:**
+
 - ✅ Ruff linting and formatting
 - ✅ Type checking (mypy)
 - ✅ Secret scanning (detect-secrets)
@@ -468,9 +475,11 @@ git commit -m "Your message"
 ### Pre-Commit Hook Protection
 
 **Protected Branches** (require PR, no direct commits):
+
 - ✅ `main` - Production code only
 
 **Allowed Branches** (direct commits OK, use for development):
+
 - ✓ `feature/*` - New features
 - ✓ `fix/*` - Bug fixes
 - ✓ `docs/*` - Documentation
@@ -647,6 +656,7 @@ git commit -m "Description of your changes"
 ```
 
 ⚠️ **Pre-commit hooks will automatically run and check:**
+
 - ✓ Python code formatting (ruff)
 - ✓ Import sorting (ruff)
 - ✓ Type annotations (mypy)
@@ -654,6 +664,7 @@ git commit -m "Description of your changes"
 - ✓ Whitespace & line endings (auto-fixed)
 
 **If a hook fails:**
+
 - It will tell you what's wrong
 - Most issues are auto-fixed by ruff
 - Just run `git add .` and `git commit` again
@@ -681,6 +692,7 @@ git push origin feature/your-feature-name
 ### 6️⃣ Create a Pull Request (PR)
 
 On GitHub:
+
 1. Click "New Pull Request"
 2. Select `main` as base, your branch as compare
 3. Add description of your changes
@@ -800,22 +812,24 @@ make gpu-check
 **Zero cost, no credit card required:**
 
 1. **Groq** (Recommended - fastest)
-   - Get key: https://console.groq.com/keys
+   - Get key: <https://console.groq.com/keys>
    - Free tier: 30 requests per minute
    - No credit card needed
 
 2. **Google Gemini** (Large context)
-   - Get key: https://aistudio.google.com/apikey
+   - Get key: <https://aistudio.google.com/apikey>
    - Free tier: 1M tokens per month
    - No credit card needed
 
 3. **Add to your .env:**
+
    ```bash
    GROQ_API_KEY=gsk_xxxxx
    GOOGLE_API_KEY=xxxxx
    ```
 
 4. **Run - it automatically uses them!**
+
    ```bash
    make run
    ```
@@ -875,6 +889,7 @@ git commit -m "Your message"
 ### Development Workflow Overview
 
 **The Golden Rules:**
+
 1. ✅ Create a feature branch (never commit to `main`)
 2. ✅ Run `make format` and `make check-all` before committing
 3. ✅ Pre-commit hooks will validate your code
@@ -925,6 +940,7 @@ perf: improve performance                # Performance improvement
 ```
 
 Examples:
+
 ```bash
 git commit -m "feat: add GPU auto-detection"
 git commit -m "fix: correct type annotation in gpu.py"
@@ -951,6 +967,7 @@ make check-all     # All quality checks
 ```
 
 **If tests fail:**
+
 ```bash
 # Fix the issues
 # Then re-run tests
@@ -972,6 +989,7 @@ git push origin feature/your-feature
 ### Code Quality Standards
 
 All code must:
+
 - ✅ Pass `make format` (code formatting)
 - ✅ Pass `make lint` (code quality)
 - ✅ Pass `make type-check` (type safety)
@@ -1010,7 +1028,7 @@ This project is licensed under the Apache License 2.0 - see the [LICENSE](LICENS
 - 📖 **Documentation**: [docs/](docs/) folder
 - 🐛 **Found a bug?**: Create [GitHub Issue](https://github.com/your-org/aegis/issues)
 - 💬 **Questions?**: Use GitHub Discussions
-- 📧 **Email**: team@aegis-sre.dev
+- 📧 **Email**: <team@aegis-sre.dev>
 
 ### For Specific Help
 

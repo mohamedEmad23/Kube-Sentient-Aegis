@@ -1,6 +1,7 @@
 # 🚀 Quick Start Guide for Data Scientists (No GPU)
 
 ## Your Profile
+
 - **Hardware**: Intel Iris Xe, 40GB RAM
 - **Ollama**: Installed ✅
 - **Model**: llama3.1 (but should switch to smaller)
@@ -64,6 +65,7 @@ python examples/test_ollama_basic.py
 ```
 
 **Expected output:**
+
 ```
 🔧 Testing Ollama Integration
 ============================================================
@@ -202,11 +204,13 @@ asyncio.run(benchmark())
 ```
 
 **Run it**:
+
 ```bash
 python examples/benchmark_cpu_inference.py
 ```
 
 **Expected results** (on your CPU):
+
 ```
 llama3.2:3b-q4_0: 8.2s average  ✅ Best balance
 phi3:mini: 12.5s average         ⚠️ Slower but better reasoning
@@ -254,17 +258,20 @@ echo "GOOGLE_API_KEY=xxxxx" >> .env
 ## What to Learn Next (Week 1 Goals)
 
 ### Day 1-2: Ollama Basics ✅
+
 - [x] Optimize CPU configuration
 - [x] Test OllamaClient
 - [x] Run unit tests
 - [x] Benchmark performance
 
 ### Day 3-4: Prompt Engineering
+
 - [ ] Create prompt templates
 - [ ] Test with K8s error examples
 - [ ] Measure accuracy of responses
 
 ### Day 5: Integration
+
 - [ ] Connect prompts + OllamaClient
 - [ ] Build simple CLI: `aegis analyze <pod-name>`
 - [ ] Test end-to-end workflow
@@ -274,23 +281,27 @@ echo "GOOGLE_API_KEY=xxxxx" >> .env
 ## Learning Resources
 
 ### Ollama Documentation
-- Official docs: https://ollama.com/library
-- Model library: https://ollama.com/library
-- API reference: https://github.com/ollama/ollama/blob/main/docs/api.md
+
+- Official docs: <https://ollama.com/library>
+- Model library: <https://ollama.com/library>
+- API reference: <https://github.com/ollama/ollama/blob/main/docs/api.md>
 
 ### Python AsyncIO (Required for this codebase)
-- Tutorial: https://realpython.com/async-io-python/
-- Httpx docs: https://www.python-http.org/en/stable/
+
+- Tutorial: <https://realpython.com/async-io-python/>
+- Httpx docs: <https://www.python-http.org/en/stable/>
 
 ### LangChain/LangGraph (Next week)
-- LangGraph tutorial: https://langchain-ai.github.io/langgraph/tutorials/introduction/
-- Ollama integration: https://python.langchain.com/docs/integrations/chat/ollama/
+
+- LangGraph tutorial: <https://langchain-ai.github.io/langgraph/tutorials/introduction/>
+- Ollama integration: <https://python.langchain.com/docs/integrations/chat/ollama/>
 
 ---
 
 ## Troubleshooting
 
 ### "Ollama server not running"
+
 ```bash
 # Start Ollama
 ollama serve
@@ -300,6 +311,7 @@ ps aux | grep ollama
 ```
 
 ### "Model not found"
+
 ```bash
 # Pull the model
 ollama pull llama3.2:3b-q4_0
@@ -309,6 +321,7 @@ ollama list
 ```
 
 ### "Too slow on CPU"
+
 ```bash
 # Switch to free cloud APIs (see Step 6)
 # OR use smaller model
@@ -316,6 +329,7 @@ ollama pull tinyllama:1b  # 700MB, very fast
 ```
 
 ### "Import errors"
+
 ```bash
 # Install dependencies
 pip install httpx pydantic pytest pytest-asyncio
@@ -329,27 +343,32 @@ uv pip install httpx pydantic pytest pytest-asyncio
 ## Daily Progress Checklist
 
 **Day 1** (Today):
+
 - [ ] Configure Ollama for CPU ✅
 - [ ] Run `examples/test_ollama_basic.py` ✅
 - [ ] Run `pytest tests/unit/test_ollama.py` ✅
 - [ ] Benchmark CPU performance
 
 **Day 2**:
+
 - [ ] Read LangChain docs
 - [ ] Create prompt templates
 - [ ] Write tests for prompts
 
 **Day 3**:
+
 - [ ] Integrate prompts + OllamaClient
 - [ ] Test with real K8s errors
 - [ ] Measure response quality
 
 **Day 4**:
+
 - [ ] Build simple CLI tool
 - [ ] Test end-to-end workflow
 - [ ] Document your work
 
 **Day 5**:
+
 - [ ] Code review with team
 - [ ] Optimize performance
 - [ ] Plan next week's tasks
@@ -367,6 +386,7 @@ uv pip install httpx pydantic pytest pytest-asyncio
 ## Success Metrics
 
 By end of Week 1, you should:
+
 - ✅ Have working Ollama client
 - ✅ Understand async Python patterns
 - ✅ Created prompt templates
