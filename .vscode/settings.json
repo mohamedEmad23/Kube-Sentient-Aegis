@@ -127,19 +127,25 @@
   // Spell checker
   "cSpell.words": [
     "AEGIS",
+    "asyncio",
+    "coroutine",
+    "Falco",
     "kopf",
     "kube",
+    "kubeconfig",
     "kubectl",
     "kubernetes",
-    "kubeconfig",
-    "langgraph",
     "langchain",
+    "langgraph",
+    "LOADTEST",
     "ollama",
     "opentelemetry",
     "pydantic",
-    "asyncio",
-    "coroutine",
+    "rocm",
+    "serviceaccount",
     "structlog",
-    "unifonic"
-  ]
+    "unifonic",
+    "vcluster"
+  ],
+  "makefile.configureOnOpen": false
 }

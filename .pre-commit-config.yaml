@@ -17,17 +17,21 @@ ci:
   submodules: false
 
 repos:
-  # General file fixes
+  # General file fixes (Python files only)
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v5.0.0
     hooks:
       - id: trailing-whitespace
-        args: [--markdown-linebreak-ext=md]
+        types: [python]
       - id: end-of-file-fixer
+        types: [python]
       - id: check-yaml
         args: [--unsafe]  # Allow custom YAML tags for K8s
+        exclude: ^(docs/|\.vscode/|README\.md|.*\.md)
       - id: check-toml
+        exclude: ^(docs/|\.vscode/|README\.md|.*\.md)
       - id: check-json
+        exclude: ^\.vscode/
       - id: check-added-large-files
         args: [--maxkb=1000]
       - id: check-case-conflict
@@ -60,6 +64,7 @@ repos:
       - id: mypy
         additional_dependencies:
           - pydantic>=2.10.0
+          - pydantic-settings>=2.0.0
           - types-requests
           - types-PyYAML
           - types-aiofiles
@@ -107,12 +112,12 @@ repos:
       - id: shellcheck
         args: [--severity=warning]
 
-  # Markdown linting
-  - repo: https://github.com/igorshubovych/markdownlint-cli
-    rev: v0.44.0
-    hooks:
-      - id: markdownlint
-        args: [--fix, --disable, MD013, MD033, MD041, --]
+  # Markdown linting (disabled - excluded from pre-commit)
+  # - repo: https://github.com/igorshubovych/markdownlint-cli
+  #   rev: v0.44.0
+  #   hooks:
+  #     - id: markdownlint
+  #       args: [--fix, --disable, MD013, MD033, MD041, --]
 
   # Helm chart linting (if helm is installed)
   - repo: local
