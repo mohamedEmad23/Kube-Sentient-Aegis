@@ -30,53 +30,71 @@
 - [Contributing](#contributing)
 - [License](#license)
 
-## 🚀 Quick Start
+## 🚀 Quick Start for Team Members
 
-### For Developers with GPUs (Fastest Path)
+> **👥 For Data Scientists & Security Engineers** - Complete setup in one command
+
+### One-Command Setup (Recommended)
 
 ```bash
 # 1. Clone the repository
 git clone https://github.com/your-org/aegis.git
 cd aegis
 
-# 2. Install uv (Python package manager)
+# 2. Ensure Python 3.12+ is installed
+python3 --version  # Must be 3.12 or higher
+
+# 3. Install uv package manager
 curl -LsSf https://astral.sh/uv/install.sh | sh
 
-# 3. Setup development environment
+# 4. Run the master setup command (installs everything)
 make setup
-
-# 4. Check your GPU
-make gpu-check
-
-# 5. Start Ollama and pull models
-make run-ollama &
-make ollama-pull
-
-# 6. Run the operator locally
-make run-operator
 ```
 
-### For Developers without GPUs (Cloud API Mode)
+✅ This single command does everything:
+- ✓ Installs all Python dependencies (production + development)
+- ✓ Creates `.env` file from template
+- ✓ Installs pre-commit git hooks
+- ✓ Detects your GPU automatically
+- ✓ Recommends optimal Ollama models for your VRAM
+- ✓ Verifies everything is working
+
+### After Setup: Check Your GPU
 
 ```bash
-# 1-3. Same as above
+# Auto-detect GPU and get recommendations
+make gpu-check
 
-# 4. Get free API keys (no credit card required)
-# Groq: https://console.groq.com/ (fastest, recommended)
-# Google Gemini: https://aistudio.google.com/apikey (large context)
+# Output example (8GB VRAM):
+# NVIDIA GPU detected: RTX 3070
+# Recommended models: llama3.2:3b, phi3:mini, qwen2:7b
+```
 
-# 5. Configure API keys
-cat > .env.local << EOF
-GROQ_API_KEY=your_groq_key_here
-GOOGLE_API_KEY=your_gemini_key_here
-EOF
+### For GPU Users: Pull Your Models
 
-# 6. Run operator with cloud APIs only
-export OLLAMA_BASE_URL=none  # Disable local GPU check
+```bash
+# Automatically pulls the best model for your GPU VRAM
+make ollama-pull
+
+# Or manually pull specific models
+ollama pull llama3.2:3b
+ollama pull phi3:mini
+ollama pull tinyllama:1b
+```
+
+### For CPU-Only Users: Use Free Cloud APIs
+
+```bash
+# Get free API keys (no credit card required, ever):
+# Groq: https://console.groq.com/keys (fastest, 30 req/min free)
+# Google Gemini: https://aistudio.google.com/apikey (1M token context)
+
+# Add to .env
+GROQ_API_KEY=your_key_here
+GOOGLE_API_KEY=your_key_here
+
+# Run - the router will automatically use them!
 make run-operator
-
-# The router will automatically use Groq/Gemini free tiers
-# Zero infrastructure cost!
 ```
 
 ## 📦 Prerequisites
@@ -290,11 +308,11 @@ team_setup:
   teammate_1:  # Strong GPU
     primary_gpu: "local-rtx3060"
     fallback: "cloud-l4"
-    
+
   teammate_2:  # Mid GPU
     primary_gpu: "local-rtx3070"
     fallback: "cloud-t4"
-    
+
   teammate_3:  # No GPU
     primary_gpu: "cloud-t4"
     fallback: "cpu-only"
@@ -332,7 +350,59 @@ make cloud-deploy
 # Operator will automatically route LLM requests to cloud
 ```
 
-## 🏗️ Architecture
+## 📂 Project Structure & Key Files
+
+```
+aegis/
+├── .github/                      # GitHub Actions CI/CD
+├── .vscode/                      # VS Code settings (shared for team)
+├── config/
+│   ├── gpu-profiles/
+│   │   └── team-gpus.yaml        # 👈 Team GPU configuration
+│   └── models/
+├── deploy/
+│   ├── docker/                   # Docker images & compose
+│   ├── helm/                     # Kubernetes Helm charts
+│   ├── kustomize/                # Kustomize overlays (dev/staging/prod)
+│   └── terraform/                # Infrastructure as Code
+├── docs/                         # 📖 Documentation
+│   ├── architecture/             # Design & architecture
+│   ├── deployment/               # Deployment guides
+│   └── development/              # Developer guides
+├── src/aegis/                    # 🔥 Main source code
+│   ├── agent/                    # AI agent logic
+│   ├── cli.py                    # Command-line interface
+│   ├── config/                   # Configuration management
+│   ├── kubernetes/               # K8s operators
+│   ├── observability/            # Logging & metrics
+│   ├── operator/                 # K8s operator
+│   ├── security/                 # Security scanning
+│   └── utils/                    # Utilities
+├── tests/                        # 🧪 Test suite
+│   ├── unit/                     # Unit tests (fast)
+│   ├── integration/              # Integration tests (K8s)
+│   └── fixtures/                 # Test data
+├── .editorconfig                 # Editor configuration
+├── .env.example                  # Environment variables template
+├── .pre-commit-config.yaml       # ⚙️ Git hooks configuration
+├── .secrets.baseline             # Secrets scanning baseline
+├── Makefile                      # 📜 Development commands (see below)
+├── pyproject.toml                # Python project config
+└── README.md                     # This file
+```
+
+### Important Files You'll Use
+
+| File | Purpose | Edit? |
+|------|---------|-------|
+| [Makefile](Makefile) | All development commands (`make setup`, `make test`, etc.) | ❌ No |
+| [.env.example](.env.example) | Template for environment variables | ℹ️ Only to add new vars |
+| `.env` | Your local config (auto-created, don't commit!) | ✅ Yes |
+| [pyproject.toml](pyproject.toml) | Python dependencies & config | ❌ Ask Mohammed |
+| [.pre-commit-config.yaml](.pre-commit-config.yaml) | Git hooks config | ❌ No |
+| [config/gpu-profiles/team-gpus.yaml](config/gpu-profiles/team-gpus.yaml) | Team GPU info | ✅ Update yours |
+| [src/aegis/](src/aegis/) | **Main code** | ✅ Yes |
+| [tests/](tests/) | **Test files** | ✅ Yes |
 
 ```
 ┌──────────────────────────────────────────────────────────────┐
@@ -358,53 +428,279 @@ make cloud-deploy
 
 For detailed architecture documentation, see [docs/architecture/overview.md](docs/architecture/overview.md).
 
-## 📖 Usage
+## 🪝 Pre-Commit Hooks & Quality Checks
 
-### Running the Operator
+### What Are Pre-Commit Hooks?
 
-```bash
-# Local development
-make run-operator
+Git hooks automatically run quality checks **before each commit**. This prevents bad code from entering the repository.
 
-# In Kubernetes
-make k8s-deploy-dev
-```
+### Quality Checks Explained
 
-### Creating an Incident
+| Check | Tool | What It Does | Auto-Fixes? |
+|-------|------|-------------|-----------|
+| Trailing whitespace | pre-commit | Removes extra spaces | ✅ Yes |
+| Missing newlines | pre-commit | Adds newlines at EOF | ✅ Yes |
+| YAML/JSON syntax | pre-commit | Validates format | ❌ Report only |
+| Python imports | ruff | Sorts imports correctly | ✅ Yes |
+| Code formatting | ruff-format | Formats code style | ✅ Yes |
+| Linting | ruff | Finds bugs & code issues | ✅ Mostly |
+| Type checking | mypy | Checks type annotations | ❌ Report only |
+| Secrets scanning | detect-secrets | Finds hardcoded secrets | ❌ Report only |
+| Security issues | bandit | Finds security flaws | ❌ Report only |
 
-```yaml
-# examples/incidents/memory-leak.yaml
-apiVersion: aegis.io/v1
-kind: Incident
-metadata:
-  name: api-memory-leak
-spec:
-  type: performance
-  severity: high
-  affected:
-    namespace: production
-    deployment: api-server
-  description: "API server memory usage increasing over time"
-```
+### Most Common Issue: Import Not Sorted
 
 ```bash
-kubectl apply -f examples/incidents/memory-leak.yaml
+# ❌ BAD - Hook will fail
+from z_module import something
+from a_module import other
+
+# ✅ GOOD - After make format
+from a_module import other
+from z_module import something
+
+# Fix: Just run this before committing
+make format
+git add .
+git commit -m "Your message"
 ```
 
-### Monitoring Resolution
+### Pre-Commit Hook Protection
+
+**Protected Branches** (require PR, no direct commits):
+- ✅ `main` - Production code only
+
+**Allowed Branches** (direct commits OK, use for development):
+- ✓ `feature/*` - New features
+- ✓ `fix/*` - Bug fixes
+- ✓ `docs/*` - Documentation
+- ✓ `develop` - Development branch
+- ✓ `staging` - Staging branch
+
+### Troubleshooting Pre-Commit Issues
 
 ```bash
-# Watch incident status
-kubectl get incidents -w
+# "Pre-commit hook failed"
+# Solution: The error message tells you what's wrong
 
-# View operator logs
-make k8s-logs
+# Most common fix:
+make format  # Auto-fixes formatting
+make lint    # Shows remaining issues
+git add .
+git commit -m "Your message"
 
-# Check shadow environments
-kubectl get vclusters -n aegis-shadows
+# "Secret detected"
+# NEVER commit secrets! Use environment variables:
+# In .env (git-ignored):
+GROQ_API_KEY=gsk_xxxxx
+
+# In code:
+api_key = os.getenv("GROQ_API_KEY")
+
+# "Type checking failed (mypy)"
+# Add type annotations to fix:
+def process_data(data: dict) -> str:  # Add types
+    return str(data)
+
+# Skip hooks only for emergency hotfixes
+git commit --no-verify -m "Critical hotfix"
 ```
 
-## 🧪 Testing
+## 📜 Command Reference - All Development Commands
+
+```bash
+# ============== SETUP (One-time) ==============
+make setup              # Master setup command (installs everything!)
+make install            # Install production dependencies only
+make install-dev        # Install all dependencies (dev + prod)
+
+# ============== CODE QUALITY ==============
+make format             # Auto-format all Python code
+make lint               # Run linter to find issues
+make type-check         # Type checking with mypy
+make security           # Security scanning (bandit, safety)
+make check-all          # Run format + lint + type-check + security
+
+# ============== TESTING ==============
+make test               # Run all tests
+make test-unit          # Unit tests only (fast)
+make test-cov           # Tests with coverage report
+make test-integration   # Integration tests (requires K8s)
+make test-watch         # Watch mode (auto-rerun on changes)
+
+# ============== RUNNING ==============
+make run                # Run operator locally
+make run-dev            # Run operator in dev mode (auto-reload)
+make shell              # Interactive Python shell with project loaded
+make repl               # IPython shell
+
+# ============== GPU & OLLAMA ==============
+make gpu-check          # Auto-detect GPU and recommend models
+make ollama-check       # Check Ollama installation
+make ollama-pull        # Pull recommended model for your GPU
+make ollama-start       # Start Ollama server
+
+# ============== DOCKER & KUBERNETES ==============
+make docker-build       # Build Docker image
+make docker-push        # Push to registry
+make k8s-check          # Verify K8s cluster connection
+make k8s-crds           # Install CRDs
+make helm-lint          # Lint Helm charts
+
+# ============== DOCUMENTATION ==============
+make docs               # Build documentation
+make docs-serve         # Serve docs at http://localhost:8000
+
+# ============== BUILD & RELEASE ==============
+make build              # Build distribution packages
+make publish            # Publish to PyPI
+
+# ============== CLEANUP ==============
+make clean              # Clean build artifacts
+make clean-all          # Deep clean (removes venv too)
+
+# ============== INFO ==============
+make version            # Show project version
+make info               # Show project info
+make help               # Display all commands
+```
+
+### Quick Examples
+
+```bash
+# Start developing a new feature
+git checkout -b feature/my-feature
+make format              # Auto-format code
+make check-all           # Run all quality checks
+git commit -m "feat: my feature"
+git push origin feature/my-feature
+# → Create PR on GitHub
+
+# Before committing (critical!)
+make format              # Auto-format
+make lint                # Find issues
+make type-check          # Check types
+make test                # Run tests
+# Then: git add . && git commit
+
+# Test your changes
+make test                # All tests
+make test-unit           # Fast unit tests
+make test-cov            # With coverage
+
+# Work with your GPU
+make gpu-check           # What GPU do I have?
+make ollama-pull         # Download model
+make run                 # Run the operator
+
+# Clean up
+make clean               # Remove artifacts
+```
+
+## 🔄 Development Workflow (Required Reading)
+
+⚠️ **IMPORTANT: All team members MUST follow this workflow**
+
+### 1️⃣ Create a Feature Branch
+
+```bash
+# Update main branch
+git checkout main
+git pull origin main
+
+# Create your feature branch (use descriptive names)
+git checkout -b feature/your-feature-name
+# or
+git checkout -b fix/bug-description
+# or
+git checkout -b docs/documentation-update
+```
+
+### 2️⃣ Make Your Changes
+
+```bash
+# Edit files in VS Code
+# Write code following Python conventions
+```
+
+### 3️⃣ Format & Lint Before Committing (CRITICAL!)
+
+```bash
+# Auto-format code (fixes whitespace, imports, line endings)
+make format
+
+# Run linter to check code quality
+make lint
+
+# Type checking
+make type-check
+
+# Or run all quality checks in one go
+make check-all
+```
+
+### 4️⃣ Commit Your Changes
+
+```bash
+git add .
+git commit -m "Description of your changes"
+```
+
+⚠️ **Pre-commit hooks will automatically run and check:**
+- ✓ Python code formatting (ruff)
+- ✓ Import sorting (ruff)
+- ✓ Type annotations (mypy)
+- ✓ Security vulnerabilities (bandit, detect-secrets)
+- ✓ Whitespace & line endings (auto-fixed)
+
+**If a hook fails:**
+- It will tell you what's wrong
+- Most issues are auto-fixed by ruff
+- Just run `git add .` and `git commit` again
+
+**Common errors and fixes:**
+
+```bash
+# Error: "Type checking failed"
+# Fix: Add type annotations, then re-commit
+git add .
+git commit -m "Your message"
+
+# Error: "Secrets detected"
+# Fix: NEVER commit secrets! Use .env instead
+# Bad: API_KEY = "sk-123456789"
+# Good: API_KEY = os.getenv("API_KEY")
+```
+
+### 5️⃣ Push to Remote
+
+```bash
+git push origin feature/your-feature-name
+```
+
+### 6️⃣ Create a Pull Request (PR)
+
+On GitHub:
+1. Click "New Pull Request"
+2. Select `main` as base, your branch as compare
+3. Add description of your changes
+4. Request review from teammates
+5. Wait for CI/CD checks and approval
+
+### 7️⃣ After Approval: Merge to Main
+
+Once approved and all checks pass, merge your PR to `main`.
+
+⚠️ **YOU CANNOT COMMIT DIRECTLY TO `main` BRANCH** - This is protected. Always create a PR first.
+
+### Emergency Hotfix Only
+
+```bash
+# Only for critical production fixes
+git commit --no-verify -m "Critical hotfix: [description]"
+
+# Must create a PR immediately after
+```
 
 ### Test Organization
 
@@ -446,15 +742,15 @@ import pytest
 @pytest.mark.unit
 def test_llm_client():
     """Fast unit test"""
-    
+
 @pytest.mark.integration
 def test_vcluster_creation():
     """Requires K8s cluster"""
-    
+
 @pytest.mark.gpu
 def test_ollama_inference():
     """Requires GPU"""
-    
+
 @pytest.mark.slow
 def test_e2e_scenario():
     """Long-running E2E test"""
@@ -469,39 +765,219 @@ def test_e2e_scenario():
 # GPU tests: Skip in CI (local only)
 ```
 
-## 🤝 Contributing
+## ⚠️ Important Information for Team Members
 
-We welcome contributions! Please see [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
+### GPU Configuration for Your Team
 
-### Development Workflow
+| Role | GPU | VRAM | Recommended Model | Run This |
+|------|-----|------|-------------------|----------|
+| Data Scientist #1 | Unknown | 8GB | llama3.2:3b, phi3:mini | `make gpu-check` |
+| Data Scientist #2 | Unknown | 6GB | tinyllama:1b, phi3:mini | `make gpu-check` |
+| Security Engineer | NVIDIA | Unknown | ? | `make gpu-check` |
+| Lead | Intel Iris Xe | N/A | CPU-only / Cloud APIs | Use Groq/Gemini |
 
-1. **Fork and clone** the repository
-2. **Create a branch**: `git checkout -b feature/your-feature`
-3. **Make changes** with tests and documentation
-4. **Run quality checks**: `make quality`
-5. **Run tests**: `make test`
-6. **Commit** with conventional commits: `git commit -m "feat: add shadow verification"`
-7. **Push** and create a Pull Request
+**Your GPU will be auto-detected.** Just run `make gpu-check` and follow the instructions!
+
+### Automatic GPU Detection
+
+The system automatically detects your GPU and recommends models:
+
+```bash
+make gpu-check
+
+# Output if you have NVIDIA GPU:
+# ✓ NVIDIA RTX 3070 detected
+# ✓ Available VRAM: 8GB
+# ✓ Recommended models: llama3.2:3b, phi3:mini
+
+# Output if no GPU:
+# ✓ No NVIDIA GPU detected
+# ✓ Options: Use CPU-only or cloud APIs (Groq, Gemini)
+```
+
+### No GPU? Use Free Cloud APIs
+
+**Zero cost, no credit card required:**
+
+1. **Groq** (Recommended - fastest)
+   - Get key: https://console.groq.com/keys
+   - Free tier: 30 requests per minute
+   - No credit card needed
+
+2. **Google Gemini** (Large context)
+   - Get key: https://aistudio.google.com/apikey
+   - Free tier: 1M tokens per month
+   - No credit card needed
+
+3. **Add to your .env:**
+   ```bash
+   GROQ_API_KEY=gsk_xxxxx
+   GOOGLE_API_KEY=xxxxx
+   ```
+
+4. **Run - it automatically uses them!**
+   ```bash
+   make run
+   ```
+
+### Troubleshooting Setup
+
+```bash
+# "make: command not found"
+sudo apt-get install build-essential
+
+# "uv: command not found"
+source $HOME/.cargo/env
+
+# "No module named 'aegis'"
+source .venv/bin/activate
+
+# "NVIDIA GPU not detected"
+# Install NVIDIA drivers first:
+sudo apt-get install nvidia-driver-545
+
+# Pre-commit hook keeps failing?
+make format       # Auto-fix formatting
+make lint         # Check issues
+git add .
+git commit -m "Your message"
+```
+
+### What's Git Pre-Commit?
+
+- ✅ Automatic code quality checks before each commit
+- ✅ Prevents bad code from entering the repository
+- ✅ Saves time in code reviews
+- ⚠️ Main branch is protected (no direct commits)
+- ✓ All changes must go through Pull Requests
+
+### GitHub Workflow Summary
+
+1. **Create branch** → `git checkout -b feature/your-feature`
+2. **Make changes** → Edit files
+3. **Format & lint** → `make format && make check-all`
+4. **Commit** → `git commit -m "description"`
+5. **Push** → `git push origin feature/your-feature`
+6. **Create PR** → Click "New Pull Request" on GitHub
+7. **Wait for review** → Get approval
+8. **Merge** → Merge to `main`
+
+⚠️ **You cannot commit directly to `main`** - Always use Pull Requests.
+
+## 🤝 Contributing Guidelines
+
+### Before Contributing
+
+1. Read the [Development Workflow](#-development-workflow) section above
+2. Run `make setup` to ensure everything is installed
+3. Join the team communication channels
+
+### Development Workflow Overview
+
+**The Golden Rules:**
+1. ✅ Create a feature branch (never commit to `main`)
+2. ✅ Run `make format` and `make check-all` before committing
+3. ✅ Pre-commit hooks will validate your code
+4. ✅ Create a Pull Request for code review
+5. ✅ Get approval before merging
+
+### Step-by-Step for Your First Contribution
+
+```bash
+# 1. Create feature branch
+git checkout -b feature/your-feature
+
+# 2. Make your changes
+# Edit files in src/aegis/ or tests/
+
+# 3. Format & check everything
+make format       # Auto-fixes code style
+make check-all    # Lint, type-check, security
+
+# 4. Commit with a clear message
+git add .
+git commit -m "feat: add your feature"
+# Hooks will run automatically!
+
+# 5. Push to remote
+git push origin feature/your-feature
+
+# 6. On GitHub: Create Pull Request
+# - Describe what you changed
+# - Link related issues
+# - Request review from teammates
+
+# 7. After approval: Merge to main
+```
 
 ### Commit Message Format
 
-We use [Conventional Commits](https://www.conventionalcommits.org/):
+Use [Conventional Commits](https://www.conventionalcommits.org/):
 
 ```
-feat: add shadow verification for SQL injection
-fix: correct vCluster cleanup logic
-docs: update GPU setup instructions
-test: add integration tests for Kata runtime
-refactor: simplify LLM routing logic
-chore: update dependencies
+feat: add new feature                    # New feature
+fix: correct a bug                       # Bug fix
+docs: update documentation               # Doc changes
+test: add test for feature               # Test changes
+refactor: improve code structure         # Code refactoring
+chore: update dependencies               # Maintenance
+perf: improve performance                # Performance improvement
+```
+
+Examples:
+```bash
+git commit -m "feat: add GPU auto-detection"
+git commit -m "fix: correct type annotation in gpu.py"
+git commit -m "docs: add GPU setup guide"
+git commit -m "test: add test for Ollama integration"
 ```
 
 ### Code Review Process
 
-- All PRs require at least 1 approval
-- CI checks must pass
-- Code coverage must not decrease
-- Documentation must be updated
+1. **Create PR** with clear title and description
+2. **Wait for CI checks** (automated quality checks)
+3. **Assign reviewers** (teammates)
+4. **Address feedback** if any
+5. **Get approval** (at least 1 reviewer)
+6. **Merge to main**
+
+### Testing Requirements
+
+```bash
+# Before creating PR, run:
+make test          # All tests must pass
+make test-cov      # Coverage check
+make check-all     # All quality checks
+```
+
+**If tests fail:**
+```bash
+# Fix the issues
+# Then re-run tests
+make test
+
+# Once passing, commit and push
+git add .
+git commit -m "fix: address test failures"
+git push origin feature/your-feature
+```
+
+### When You're Stuck
+
+1. **Check the logs**: `make run` shows detailed error messages
+2. **Run tests**: `make test-unit` for fast feedback
+3. **Ask teammates**: Use GitHub Issues or team chat
+4. **Read docs**: Check [docs/](docs/) folder
+
+### Code Quality Standards
+
+All code must:
+- ✅ Pass `make format` (code formatting)
+- ✅ Pass `make lint` (code quality)
+- ✅ Pass `make type-check` (type safety)
+- ✅ Pass `make security` (security scanning)
+- ✅ Have tests (`make test`)
+- ✅ Have documentation in docstrings
 
 ## 📄 License
 
@@ -515,12 +991,49 @@ This project is licensed under the Apache License 2.0 - see the [LICENSE](LICENS
 - [LangGraph](https://github.com/langchain-ai/langgraph) - Agent orchestration
 - All the amazing open-source tools in our stack
 
-## 📞 Support
+## 📞 Getting Help
 
-- **Documentation**: [aegis-sre.dev](https://aegis-sre.dev)
-- **Issues**: [GitHub Issues](https://github.com/your-org/aegis/issues)
-- **Discussions**: [GitHub Discussions](https://github.com/your-org/aegis/discussions)
-- **Email**: team@aegis-sre.dev
+### Common Issues & Solutions
+
+| Issue | Cause | Solution |
+|-------|-------|----------|
+| `make: command not found` | Make not installed | `sudo apt-get install build-essential` |
+| `uv: command not found` | uv not in PATH | `source $HOME/.cargo/env` |
+| `No module named 'aegis'` | venv not activated | `source .venv/bin/activate` |
+| Pre-commit hook fails | Code formatting issue | `make format && git add . && git commit` |
+| NVIDIA GPU not detected | Drivers missing | Install NVIDIA drivers + CUDA |
+| Import sorting error | Imports not sorted | Run `make format` |
+| Type checking error | Missing type annotations | Add type hints to functions |
+
+### Support Channels
+
+- 📖 **Documentation**: [docs/](docs/) folder
+- 🐛 **Found a bug?**: Create [GitHub Issue](https://github.com/your-org/aegis/issues)
+- 💬 **Questions?**: Use GitHub Discussions
+- 📧 **Email**: team@aegis-sre.dev
+
+### For Specific Help
+
+**Setup Issues:**
+→ Check [Troubleshooting Setup](#troubleshooting-setup) section above
+
+**Pre-Commit Errors:**
+→ Check [Pre-Commit Hooks & Quality Checks](#-pre-commit-hooks--quality-checks) section
+
+**GPU Problems:**
+→ Run `make gpu-check` for automatic diagnostics
+
+**Test Failures:**
+→ Run `make test-unit` for detailed error messages
+
+### Quick Checklist Before Asking for Help
+
+- [ ] I ran `make setup` successfully
+- [ ] I ran `make gpu-check` and understood my GPU
+- [ ] I ran `make format` on my changes
+- [ ] I ran `make check-all` and all checks pass
+- [ ] I read the relevant documentation section
+- [ ] I checked existing GitHub Issues
 
 ---
 
