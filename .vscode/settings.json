@@ -129,6 +129,7 @@
     "AEGIS",
     "asyncio",
     "coroutine",
+    "deepseek",
     "Falco",
     "kopf",
     "kube",
