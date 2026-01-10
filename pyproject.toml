@@ -290,6 +290,10 @@ module = [
     "langchain.*",
     "langchain_community.*",
     "langchain_core.*",
+    "prometheus_client.*",
+    "structlog.*",
+    "typer.*",
+    "rich.*",
 ]
 ignore_missing_imports = true
 
