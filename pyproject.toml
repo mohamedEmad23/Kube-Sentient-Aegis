@@ -282,10 +282,6 @@ module = "tests.*"
 disallow_untyped_defs = false
 
 [[tool.mypy.overrides]]
-module = "aegis.cli"
-disallow_untyped_decorators = false
-
-[[tool.mypy.overrides]]
 module = [
     "kopf.*",
     "locust.*",

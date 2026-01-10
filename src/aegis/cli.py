@@ -15,6 +15,8 @@ Commands:
 """
 
 import sys
+from collections.abc import Callable
+from typing import Any, ParamSpec, TypeVar
 
 import typer
 from prometheus_client import start_http_server
@@ -26,10 +28,64 @@ from rich.table import Table
 from aegis.agent.llm.ollama import get_ollama_client
 from aegis.config.settings import settings
 from aegis.observability._logging import get_logger
-from aegis.observability._metrics import (
-    active_incidents,
-    incidents_detected_total,
-)
+from aegis.observability._metrics import active_incidents, incidents_detected_total
+
+
+# ============================================================================
+# Typed Decorator Wrappers for Typer
+# ============================================================================
+
+P = ParamSpec("P")
+R = TypeVar("R")
+
+
+def typed_callback(
+    typer_app: typer.Typer,
+) -> Callable[[Callable[P, R]], Callable[P, R]]:
+    """Type-safe wrapper for @app.callback() decorator.
+
+    Preserves function signature using ParamSpec for full type safety.
+
+    Args:
+        typer_app: The Typer application instance
+
+    Returns:
+        A decorator that registers the callback and preserves types
+    """
+
+    def decorator(func: Callable[P, R]) -> Callable[P, R]:
+        typer_app.callback()(func)
+        return func
+
+    return decorator
+
+
+def typed_command(
+    typer_app: typer.Typer,
+    name: str | None = None,
+    **kwargs: Any,
+) -> Callable[[Callable[P, R]], Callable[P, R]]:
+    """Type-safe wrapper for @app.command() decorator.
+
+    Preserves function signature using ParamSpec for full type safety.
+
+    Args:
+        typer_app: The Typer application instance
+        name: Optional command name override
+        **kwargs: Additional arguments passed to Typer's command decorator
+
+    Returns:
+        A decorator that registers the command and preserves types
+    """
+
+    def decorator(func: Callable[P, R]) -> Callable[P, R]:
+        if name is not None:
+            typer_app.command(name=name, **kwargs)(func)
+        else:
+            typer_app.command(**kwargs)(func)
+        return func
+
+    return decorator
 
 
 # Initialize CLI app
@@ -59,7 +115,7 @@ def version_callback(value: bool) -> None:
         raise typer.Exit
 
 
-@app.callback()
+@typed_callback(app)
 def main(
     _ctx: typer.Context,
     _version: bool | None = typer.Option(
@@ -103,7 +159,7 @@ def main(
 # ============================================================================
 
 
-@app.command()
+@typed_command(app)
 def analyze(
     resource: str = typer.Argument(
         ...,
@@ -192,7 +248,7 @@ incident_app = typer.Typer(help="Manage incidents")
 app.add_typer(incident_app, name="incident")
 
 
-@incident_app.command("list")
+@typed_command(incident_app, name="list")
 def incident_list(
     namespace: str | None = typer.Option(
         None,
@@ -233,7 +289,7 @@ def incident_list(
     console.print()
 
 
-@incident_app.command("show")
+@typed_command(incident_app, name="show")
 def incident_show(
     incident_id: str = typer.Argument(..., help="Incident ID"),
 ) -> None:
@@ -272,7 +328,7 @@ shadow_app = typer.Typer(help="Manage shadow verification environments")
 app.add_typer(shadow_app, name="shadow")
 
 
-@shadow_app.command("create")
+@typed_command(shadow_app, name="create")
 def shadow_create(
     name: str = typer.Option(
         ...,
@@ -301,7 +357,7 @@ def shadow_create(
     console.print()
 
 
-@shadow_app.command("list")
+@typed_command(shadow_app, name="list")
 def shadow_list() -> None:
     """List shadow environments.
 
@@ -327,7 +383,7 @@ def shadow_list() -> None:
     console.print()
 
 
-@shadow_app.command("delete")
+@typed_command(shadow_app, name="delete")
 def shadow_delete(
     name: str = typer.Argument(..., help="Shadow environment name"),
 ) -> None:
@@ -349,7 +405,7 @@ def shadow_delete(
 # ============================================================================
 
 
-@app.command()
+@typed_command(app)
 def config(
     show_sensitive: bool = typer.Option(
         False,
@@ -408,7 +464,7 @@ def config(
 # ============================================================================
 
 
-@app.command()
+@typed_command(app)
 def version() -> None:
     """Show AEGIS version information."""
     console.print(f"\n[bold cyan]AEGIS[/bold cyan] version [green]{settings.app_version}[/green]")
