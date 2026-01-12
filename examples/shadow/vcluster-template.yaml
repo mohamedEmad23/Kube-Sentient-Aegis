@@ -1,0 +1,131 @@
+# vCluster template for AEGIS Shadow Environments
+# This template creates isolated virtual Kubernetes clusters for fix verification
+#
+# Usage by AEGIS:
+#   1. Create shadow: vcluster create shadow-{incident_id} -n aegis-shadows -f vcluster-template.yaml
+#   2. Connect: vcluster connect shadow-{incident_id} -n aegis-shadows
+#   3. Clone workloads and apply fixes
+#   4. Run verification tests
+#   5. Cleanup: vcluster delete shadow-{incident_id} -n aegis-shadows
+
+# vCluster configuration
+sync:
+  # Sync these resources from host to vCluster
+  toHost:
+    # Sync pods created in vCluster to host
+    pods:
+      enabled: true
+    # Sync services
+    services:
+      enabled: true
+    # Sync configmaps
+    configmaps:
+      enabled: true
+    # Sync secrets
+    secrets:
+      enabled: true
+    # Sync persistent volume claims
+    persistentvolumeclaims:
+      enabled: true
+
+  # Resources to sync from host to vCluster
+  fromHost:
+    # Sync storage classes so PVCs work
+    storageClasses:
+      enabled: true
+    # Sync ingress classes if needed
+    ingressClasses:
+      enabled: false
+
+# Resource isolation
+isolation:
+  enabled: true
+
+  # Namespace where vCluster pods run in the host
+  namespace: null
+
+  # Resource limits for the vCluster itself
+  resourceQuota:
+    enabled: true
+    quota:
+      requests.cpu: "2"
+      requests.memory: "4Gi"
+      limits.cpu: "4"
+      limits.memory: "8Gi"
+      pods: "20"
+      services: "10"
+      configmaps: "20"
+      secrets: "20"
+      persistentvolumeclaims: "5"
+
+  # Limit ranges for pods in vCluster
+  limitRange:
+    enabled: true
+    default:
+      cpu: "500m"
+      memory: "512Mi"
+    defaultRequest:
+      cpu: "100m"
+      memory: "128Mi"
+
+# Control plane configuration
+controlPlane:
+  # Use k3s as the control plane (lightweight)
+  distro:
+    k3s:
+      enabled: true
+
+  # Resource limits for vCluster control plane
+  statefulSet:
+    resources:
+      requests:
+        cpu: "100m"
+        memory: "256Mi"
+      limits:
+        cpu: "500m"
+        memory: "512Mi"
+
+    # Faster startup for demos
+    persistence:
+      volumeClaim:
+        enabled: false  # Use emptyDir for faster creation
+
+  # Service account configuration
+  serviceAccount:
+    enabled: true
+
+# Networking
+networking:
+  # Replicate services between host and vCluster
+  replicateServices:
+    toHost: []
+    fromHost: []
+
+# Policies
+policies:
+  # Pod security standards
+  podSecurityStandard: baseline
+
+  # Resource quota (already defined in isolation)
+  resourceQuota:
+    enabled: false  # Using isolation.resourceQuota instead
+
+# Telemetry (disable for privacy)
+telemetry:
+  enabled: false
+
+# Export kubeconfig
+exportKubeConfig:
+  # Make kubeconfig available as secret
+  secret:
+    name: "vc-shadow-kubeconfig"
+
+# Labels for shadow identification
+labels:
+  aegis.io/component: shadow-environment
+  aegis.io/managed-by: aegis-operator
+
+# Annotations
+annotations:
+  aegis.io/purpose: fix-verification
+  aegis.io/auto-cleanup: "true"

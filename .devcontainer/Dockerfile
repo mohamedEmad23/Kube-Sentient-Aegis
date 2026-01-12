@@ -1,7 +1,11 @@
 # AEGIS Development Container
 FROM mcr.microsoft.com/devcontainers/python:1-3.12-bookworm
 
-# Install system dependencies
+# Set shell with pipefail for safer pipe operations
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+
+# Install system dependencies and uv in single layer
+# hadolint ignore=DL3008
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     curl \
@@ -9,10 +13,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     jq \
     vim \
     zsh \
-    && rm -rf /var/lib/apt/lists/*
-
-# Install uv package manager
-RUN curl -LsSf https://astral.sh/uv/install.sh | sh
+    && rm -rf /var/lib/apt/lists/* \
+    && curl -LsSf https://astral.sh/uv/install.sh | sh
 ENV PATH="/root/.cargo/bin:${PATH}"
 
 # Set working directory

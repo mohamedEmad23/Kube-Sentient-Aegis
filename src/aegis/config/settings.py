@@ -328,6 +328,21 @@ class AgentSettings(BaseSettings):
         case_sensitive=False,
     )
 
+    # Model assignments for each agent
+    rca_model: str = Field(
+        default="llama3.2:3b-instruct-q5_k_m",
+        description="Model for Root Cause Analysis agent",
+    )
+    solution_model: str = Field(
+        default="tinyllama:latest",
+        description="Model for Solution Generation agent",
+    )
+    verifier_model: str = Field(
+        default="phi3:mini",
+        description="Model for Verification Planning agent",
+    )
+
+    # Workflow settings
     max_iterations: int = Field(
         default=5,
         description="Max workflow iterations to prevent infinite loops",

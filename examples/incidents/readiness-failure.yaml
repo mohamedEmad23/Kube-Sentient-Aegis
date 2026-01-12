@@ -1,0 +1,103 @@
+# INCIDENT: ReadinessProbe Failure - Pod Not Ready
+#
+# Scenario: Deploy demo-api with readiness probe that never passes
+# Expected: Pod runs but is never marked Ready, excluded from Service
+#
+# AEGIS Expected Detection:
+#   Root Cause: Readiness probe failing - /ready returns HTTP 503
+#   Severity: MEDIUM
+#   Fix: Fix dependency check or increase probe timeout
+#
+# Usage:
+#   kubectl apply -f readiness-failure.yaml
+#   kubectl get pods -n production  # Shows 0/1 READY
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: demo-api
+  namespace: production
+  labels:
+    app: demo-api
+    incident-type: readiness
+  annotations:
+    aegis.io/incident-scenario: "readiness-failure"
+    aegis.io/expected-fix: "Fix /ready endpoint or fix dependency connectivity"
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: demo-api
+  template:
+    metadata:
+      labels:
+        app: demo-api
+        version: v1-notready
+    spec:
+      containers:
+        - name: api
+          image: python:3.12-slim
+          imagePullPolicy: IfNotPresent
+          command:
+            - /bin/sh
+            - -c
+            - |
+              pip install fastapi uvicorn --quiet 2>/dev/null
+              cat > /app/main.py << 'EOF'
+              from fastapi import FastAPI
+              from fastapi.responses import JSONResponse
+
+              app = FastAPI()
+
+              @app.get("/")
+              async def root():
+                  return {"status": "running"}
+
+              @app.get("/health")
+              async def health():
+                  return {"status": "healthy"}
+
+              @app.get("/ready")
+              async def ready():
+                  # INTENTIONALLY BROKEN: Always returns 503 (not ready)
+                  return JSONResponse(
+                      status_code=503,
+                      content={
+                          "ready": False,
+                          "error": "Waiting for database connection",
+                          "dependencies": {
+                              "database": "connecting...",
+                              "redis": "connecting..."
+                          }
+                      }
+                  )
+
+              if __name__ == "__main__":
+                  import uvicorn
+                  uvicorn.run(app, host="0.0.0.0", port=8000)
+              EOF
+              python /app/main.py
+          ports:
+            - containerPort: 8000
+              name: http
+          resources:
+            requests:
+              memory: "64Mi"
+              cpu: "50m"
+            limits:
+              memory: "128Mi"
+              cpu: "100m"
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: 8000
+            initialDelaySeconds: 3
+            periodSeconds: 3
+            failureThreshold: 3
+      restartPolicy: Always

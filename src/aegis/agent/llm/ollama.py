@@ -8,6 +8,7 @@ Provides a production-ready client for interacting with Ollama:
 - Support for multiple models (phi3:mini, deepseek-coder, llama3.1)
 """
 
+import re
 import time
 from typing import Any
 
@@ -188,7 +189,7 @@ class OllamaClient:
         schema: type[BaseModel],
         model: str | None = None,
         temperature: float | None = None,
-    ) -> BaseModel:
+    ) -> Any:
         """Send chat request with Pydantic schema validation.
 
         Args:
@@ -198,7 +199,7 @@ class OllamaClient:
             temperature: Sampling temperature (optional)
 
         Returns:
-            BaseModel: Validated Pydantic model instance
+            Validated Pydantic model instance matching the schema type
 
         Raises:
             ValidationError: If response doesn't match schema
@@ -232,15 +233,48 @@ class OllamaClient:
             log.error("ollama_empty_content", model=response.model)
             raise ValueError(msg)
 
+        # Log raw response for debugging (INFO level to always see it)
+        log.info(
+            "ollama_raw_response",
+            model=response.model,
+            content_preview=response.message.content[:500],
+            content_length=len(response.message.content),
+        )
+
         try:
             validated = schema.model_validate_json(response.message.content)
-        except Exception:
+        except Exception as e:
+            # Try to extract JSON from markdown code blocks
+            content = response.message.content
+            json_match = re.search(r"```json\s*(.*?)\s*```", content, re.DOTALL)
+            if not json_match:
+                json_match = re.search(r"```\s*(.*?)\s*```", content, re.DOTALL)
+
+            if json_match:
+                try:
+                    validated = schema.model_validate_json(json_match.group(1))
+                    log.info(
+                        "schema_validation_success_after_extraction",
+                        schema=schema.__name__,
+                        model=model or self.default_model,
+                    )
+                except ValueError as extraction_error:
+                    log.warning(
+                        "schema_extraction_failed",
+                        schema=schema.__name__,
+                        error=str(extraction_error),
+                    )
+                else:
+                    return validated
+
             log.exception(
                 "schema_validation_failed",
                 schema=schema.__name__,
-                raw_content=response.message.content[:200],
+                raw_content=response.message.content[:500] if response.message.content else "None",
             )
-            raise
+            raise ValueError(
+                f"Failed to validate response against {schema.__name__} schema: {e}"
+            ) from e
         else:
             log.debug(
                 "schema_validation_success",

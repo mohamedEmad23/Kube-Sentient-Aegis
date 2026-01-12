@@ -96,14 +96,16 @@ repos:
         args: [-c, pyproject.toml, -r, src/]
         additional_dependencies: ["bandit[toml]"]
 
-  # Dockerfile linting
-  - repo: https://github.com/hadolint/hadolint
-    rev: v2.12.0
+  # Dockerfile linting (dual-mode: local binary or Docker fallback)
+  # See scripts/hadolint-check.sh for implementation details
+  - repo: local
     hooks:
-      - id: hadolint-docker
-        name: Lint Dockerfiles
-        entry: hadolint
+      - id: hadolint
+        name: Lint Dockerfiles (hadolint)
+        entry: ./scripts/hadolint-check.sh
+        language: script
         types: [dockerfile]
+        pass_filenames: true
 
   # Shell script linting
   - repo: https://github.com/shellcheck-py/shellcheck-py

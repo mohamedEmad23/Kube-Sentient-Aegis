@@ -1,0 +1,56 @@
+# INCIDENT: ImagePullBackOff - Invalid Image Tag
+#
+# Scenario: Deploy demo-api with non-existent image tag
+# Expected: Pod stuck in ImagePullBackOff
+#
+# AEGIS Expected Detection:
+#   Root Cause: Image python:3.99-nonexistent does not exist
+#   Severity: MEDIUM
+#   Fix: Update image tag to valid version (python:3.12-slim)
+#
+# Usage:
+#   kubectl apply -f imagepull-bad-tag.yaml
+#   kubectl get pods -n production -w  # Watch ImagePullBackOff
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: demo-api
+  namespace: production
+  labels:
+    app: demo-api
+    incident-type: imagepull
+  annotations:
+    aegis.io/incident-scenario: "imagepull-bad-tag"
+    aegis.io/expected-fix: "Change image tag from python:3.99-nonexistent to python:3.12-slim"
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: demo-api
+  template:
+    metadata:
+      labels:
+        app: demo-api
+        version: v1-badimage
+    spec:
+      containers:
+        - name: api
+          # INTENTIONALLY INVALID: This image tag doesn't exist
+          image: python:3.99-nonexistent
+          imagePullPolicy: Always
+          command:
+            - python
+            - -c
+            - "print('This will never run')"
+          ports:
+            - containerPort: 8000
+              name: http
+          resources:
+            requests:
+              memory: "64Mi"
+              cpu: "50m"
+            limits:
+              memory: "128Mi"
+              cpu: "100m"
+      restartPolicy: Always

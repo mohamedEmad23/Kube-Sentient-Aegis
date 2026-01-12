@@ -1,0 +1,35 @@
+# INCIDENT: Service Unreachable - Wrong Selector
+#
+# Scenario: Service with selector that doesn't match any pods
+# Expected: Service has 0 endpoints, connection refused
+#
+# AEGIS Expected Detection:
+#   Root Cause: Service selector 'app: demo-api-typo' matches no pods
+#   Severity: HIGH
+#   Fix: Update selector to 'app: demo-api'
+#
+# Usage:
+#   kubectl apply -f service-wrong-selector.yaml
+#   kubectl get endpoints demo-api -n production  # Shows 0 endpoints
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: demo-api
+  namespace: production
+  labels:
+    app: demo-api
+    incident-type: service-unreachable
+  annotations:
+    aegis.io/incident-scenario: "service-wrong-selector"
+    aegis.io/expected-fix: "Change selector from 'app: demo-api-typo' to 'app: demo-api'"
+spec:
+  type: ClusterIP
+  ports:
+    - port: 80
+      targetPort: 8000
+      protocol: TCP
+      name: http
+  # INTENTIONALLY WRONG: This selector doesn't match the pod labels
+  selector:
+    app: demo-api-typo  # Should be 'demo-api'

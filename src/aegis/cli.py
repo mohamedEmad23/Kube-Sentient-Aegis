@@ -14,9 +14,10 @@ Commands:
     aegis version               - Show version information
 """
 
+import asyncio
 import sys
 from collections.abc import Callable
-from typing import Any, ParamSpec, TypeVar
+from typing import Any, NoReturn, ParamSpec, TypeVar
 
 import typer
 from prometheus_client import start_http_server
@@ -25,6 +26,7 @@ from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
 
+from aegis.agent.graph import analyze_incident
 from aegis.agent.llm.ollama import get_ollama_client
 from aegis.config.settings import settings
 from aegis.observability._logging import get_logger
@@ -54,6 +56,7 @@ def typed_callback(
     """
 
     def decorator(func: Callable[P, R]) -> Callable[P, R]:
+        """Decorator that registers Typer callback."""
         typer_app.callback()(func)
         return func
 
@@ -79,6 +82,7 @@ def typed_command(
     """
 
     def decorator(func: Callable[P, R]) -> Callable[P, R]:
+        """Decorator that registers Typer command."""
         if name is not None:
             typer_app.command(name=name, **kwargs)(func)
         else:
@@ -159,6 +163,80 @@ def main(
 # ============================================================================
 
 
+def _display_analysis_results(console: Console, result: dict[str, Any]) -> None:
+    """Display analysis results with rich formatting.
+
+    Args:
+        console: Rich console instance
+        result: Analysis result dictionary
+    """
+    # Display RCA Results
+    rca_result = result.get("rca_result")
+    if rca_result:
+        rca_panel = Panel(
+            f"[bold]Root Cause:[/bold] {rca_result.root_cause}\n\n"
+            f"[bold]Severity:[/bold] {rca_result.severity.value.upper()}\n"
+            f"[bold]Confidence:[/bold] {rca_result.confidence_score:.2f}\n\n"
+            f"[bold]Reasoning:[/bold]\n{rca_result.reasoning}\n\n"
+            f"[bold]Affected Components:[/bold]\n"
+            + "\n".join(f"  • {comp}" for comp in rca_result.affected_components),
+            title="[bold cyan]Root Cause Analysis[/bold cyan]",
+            border_style="cyan",
+        )
+        console.print(rca_panel)
+        console.print()
+
+    # Display Fix Proposal
+    fix_proposal = result.get("fix_proposal")
+    if fix_proposal:
+        fix_text = (
+            f"[bold]Type:[/bold] {fix_proposal.fix_type.value}\n"
+            f"[bold]Description:[/bold] {fix_proposal.description}\n\n"
+            f"[bold]Commands:[/bold]\n"
+        )
+        for cmd in fix_proposal.commands:
+            fix_text += f"  • {cmd}\n"
+
+        if fix_proposal.estimated_downtime:
+            fix_text += f"\n[bold]Estimated Downtime:[/bold] {fix_proposal.estimated_downtime}\n"
+
+        if fix_proposal.risks:
+            fix_text += "\n[bold]Risks:[/bold]\n"
+            for risk in fix_proposal.risks:
+                fix_text += f"  ⚠️  {risk}\n"
+
+        fix_panel = Panel(
+            fix_text,
+            title="[bold green]Proposed Solution[/bold green]",
+            border_style="green",
+        )
+        console.print(fix_panel)
+        console.print()
+
+    # Display Verification Plan
+    verification_plan = result.get("verification_plan")
+    if verification_plan:
+        verify_text = (
+            f"[bold]Type:[/bold] {verification_plan.verification_type}\n"
+            f"[bold]Duration:[/bold] {verification_plan.duration}s\n\n"
+            f"[bold]Test Scenarios:[/bold]\n"
+        )
+        for scenario in verification_plan.test_scenarios:
+            verify_text += f"  ✓ {scenario}\n"
+
+        verify_text += "\n[bold]Success Criteria:[/bold]\n"
+        for criteria in verification_plan.success_criteria:
+            verify_text += f"  ✓ {criteria}\n"
+
+        verify_panel = Panel(
+            verify_text,
+            title="[bold blue]Verification Plan[/bold blue]",
+            border_style="blue",
+        )
+        console.print(verify_panel)
+        console.print()
+
+
 @typed_command(app)
 def analyze(
     resource: str = typer.Argument(
@@ -209,35 +287,88 @@ def analyze(
         log.error("ollama_unavailable")
         raise typer.Exit(code=1)
 
-    # For MVP, show placeholder for K8sGPT integration
-    with console.status("[bold green]Running K8sGPT analysis..."):
-        console.print("✓ K8sGPT analysis complete", style="green")
+    # Parse resource (format: type/name)
+    def validate_resource_format(res: str) -> tuple[str, str]:
+        """Validate and parse resource format.
 
-    # Placeholder for agent workflow
-    panel = Panel(
-        "[yellow]Note:[/yellow] Full agent workflow implementation pending.\n"
-        "This will trigger the LangGraph multi-agent workflow:\n"
-        "  1. RCA Agent (phi3:mini)\n"
-        "  2. Solution Agent (deepseek-coder:6.7b)\n"
-        "  3. Verifier Agent (llama3.1:8b)",
-        title="[bold]Agent Workflow[/bold]",
-        border_style="blue",
-    )
-    console.print(panel)
+        Args:
+            res: Resource string in format type/name
 
-    # Update metrics
-    incidents_detected_total.labels(
-        severity="high",
-        resource_type=resource.split("/")[0],
-        namespace=namespace,
-    ).inc()
-    active_incidents.labels(severity="high", namespace=namespace).inc()
+        Returns:
+            Tuple of (resource_type, resource_name)
 
-    log.info(
-        "analysis_completed",
-        resource=resource,
-        namespace=namespace,
-    )
+        Raises:
+            ValueError: If format is invalid
+        """
+        expected_parts = 2
+        resource_parts = res.split("/")
+        if len(resource_parts) != expected_parts:
+            msg = "Resource must be in format: type/name (e.g., pod/nginx)"
+            raise ValueError(msg)
+        return resource_parts[0], resource_parts[1]
+
+    try:
+        resource_type, resource_name = validate_resource_format(resource)
+    except ValueError as e:
+        console.print(f"[bold red]Error:[/bold red] {e}")
+        log.exception("invalid_resource_format", resource=resource)
+        raise typer.Exit(code=1) from None
+
+    # Run agent workflow
+    try:
+        with console.status("[bold green]Running K8sGPT analysis..."):
+            # Run async workflow
+            result = asyncio.run(
+                analyze_incident(
+                    resource_type=resource_type,
+                    resource_name=resource_name,
+                    namespace=namespace,
+                )
+            )
+
+        # Check for errors
+        def _exit_on_error(error_msg: str) -> NoReturn:
+            """Exit with error message."""
+            console.print(f"\n[bold red]Analysis Error:[/bold red] {error_msg}\n")
+            log.exception("analysis_failed")
+            raise typer.Exit(code=1)  # noqa: TRY301
+
+        error_msg = result.get("error")
+        if error_msg:
+            _exit_on_error(error_msg)
+
+        # Display analysis results - convert IncidentState to dict
+        _display_analysis_results(console, dict(result))
+
+        # Extract results for metrics
+        rca_result = result.get("rca_result")
+        fix_proposal = result.get("fix_proposal")
+        verification_plan = result.get("verification_plan")
+
+        # Update metrics
+        incidents_detected_total.labels(
+            severity=rca_result.severity.value if rca_result else "unknown",
+            resource_type=resource_type,
+            namespace=namespace,
+        ).inc()
+        active_incidents.labels(
+            severity=rca_result.severity.value if rca_result else "unknown",
+            namespace=namespace,
+        ).inc()
+
+        log.info(
+            "analysis_completed",
+            resource=resource,
+            namespace=namespace,
+            has_rca=rca_result is not None,
+            has_fix=fix_proposal is not None,
+            has_verification=verification_plan is not None,
+        )
+
+    except Exception as e:
+        console.print(f"\n[bold red]Unexpected Error:[/bold red] {e}\n")
+        log.exception("analysis_unexpected_error")
+        raise typer.Exit(code=1) from None
 
 
 # ============================================================================

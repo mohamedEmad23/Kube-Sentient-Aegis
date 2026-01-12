@@ -1,0 +1,22 @@
+# Kustomization for demo application
+# Allows easy deployment and patching
+
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: production
+
+resources:
+  - namespaces.yaml
+  - demo-db.yaml
+  - demo-redis.yaml
+  - demo-api.yaml
+  - demo-worker.yaml
+
+commonLabels:
+  environment: demo
+  managed-by: aegis
+
+# Common annotations
+commonAnnotations:
+  aegis.io/monitored: "true"

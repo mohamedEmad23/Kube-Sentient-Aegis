@@ -119,8 +119,8 @@ all = [
 ]
 
 [project.scripts]
-aegis = "aegis.cli:main"
-aegis-operator = "aegis.operator.main:main"
+aegis = "aegis.cli:main_cli"
+aegis-operator = "aegis.k8s_operator.main:main"
 
 [project.urls]
 Homepage = "https://github.com/your-org/aegis"
