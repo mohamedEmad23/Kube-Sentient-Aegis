@@ -6,15 +6,17 @@
 # ===========================================================================
 FROM python:3.12-slim-bookworm AS builder
 
-# Install build dependencies
+# Set shell with pipefail for safer pipe operations
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+
+# Install build dependencies and uv in single layer
+# hadolint ignore=DL3008
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     curl \
     git \
-    && rm -rf /var/lib/apt/lists/*
-
-# Install uv
-RUN curl -LsSf https://astral.sh/uv/install.sh | sh
+    && rm -rf /var/lib/apt/lists/* \
+    && curl -LsSf https://astral.sh/uv/install.sh | sh
 ENV PATH="/root/.cargo/bin:${PATH}"
 
 # Set working directory
@@ -24,8 +26,7 @@ WORKDIR /app
 COPY pyproject.toml uv.lock* ./
 
 # Create virtual environment and install dependencies
-RUN uv venv /app/.venv
-RUN uv sync --frozen --no-dev
+RUN uv venv /app/.venv && uv sync --frozen --no-dev
 
 # Copy source code
 COPY src/ ./src/
@@ -43,6 +44,7 @@ RUN groupadd --gid 1000 aegis && \
     useradd --uid 1000 --gid aegis --shell /bin/bash --create-home aegis
 
 # Install runtime dependencies only
+# hadolint ignore=DL3008
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     curl \
@@ -77,7 +79,7 @@ USER aegis
 EXPOSE 8080
 
 # Default command
-ENTRYPOINT ["python", "-m", "aegis.operator.main"]
+ENTRYPOINT ["python", "-m", "aegis.k8s_operator.main"]
 
 # Labels
 LABEL org.opencontainers.image.source="https://github.com/unifonic/aegis"

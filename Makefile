@@ -258,11 +258,11 @@ publish: build ## Publish to PyPI (requires credentials)
 
 run: ## Run the operator locally
 	@echo -e "$(BLUE)Starting AEGIS operator...$(NC)"
-	$(UV) run python -m aegis.operator.main
+	$(UV) run python -m aegis.k8s_operator.main
 
 run-dev: ## Run the operator in development mode with auto-reload
 	@echo -e "$(BLUE)Starting AEGIS operator in dev mode...$(NC)"
-	$(UV) run kopf run src/aegis/operator/main.py --dev --verbose
+	$(UV) run kopf run src/aegis/k8s_operator/main.py --dev --verbose
 
 shell: ## Open Python shell with project context
 	@echo -e "$(BLUE)Opening Python shell...$(NC)"

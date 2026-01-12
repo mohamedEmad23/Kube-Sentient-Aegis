@@ -27,9 +27,9 @@ metadata:
 type: Opaque
 stringData:
   # This is a demo secret - in real scenarios, use external secrets
-  DATABASE_URL: "postgresql://demo:demo123@demo-db:5432/demoapp"  # pragma: allowlist secret
+  DATABASE_URL: "postgresql://demo:demo123@demo-db:5432/demoapp"  # pragma: allowlist secret - Demo credentials for local development only
   REDIS_URL: "redis://demo-redis:6379/0"
-  API_KEY: "demo-api-key-not-for-production"  # pragma: allowlist secret
+  API_KEY: "demo-api-key-not-for-production"  # pragma: allowlist secret - Demo API key for local testing only
 ---
 apiVersion: apps/v1
 kind: Deployment

@@ -23,7 +23,7 @@ metadata:
 type: Opaque
 stringData:
   POSTGRES_USER: demo
-  POSTGRES_PASSWORD: demo123  # pragma: allowlist secret
+  POSTGRES_PASSWORD: demo123  # pragma: allowlist secret - Demo password for local development only
   POSTGRES_DB: demoapp
 ---
 apiVersion: apps/v1

@@ -5,7 +5,7 @@
       "name": "AEGIS: Run Operator",
       "type": "debugpy",
       "request": "launch",
-      "module": "aegis.operator.main",
+      "module": "aegis.k8s_operator.main",
       "console": "integratedTerminal",
       "cwd": "${workspaceFolder}",
       "env": {
@@ -32,7 +32,7 @@
       "type": "debugpy",
       "request": "launch",
       "program": "${workspaceFolder}/.venv/bin/kopf",
-      "args": ["run", "src/aegis/operator/main.py", "--dev", "--verbose"],
+      "args": ["run", "src/aegis/k8s_operator/main.py", "--dev", "--verbose"],
       "console": "integratedTerminal",
       "cwd": "${workspaceFolder}",
       "env": {

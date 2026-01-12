@@ -96,13 +96,14 @@ repos:
         args: [-c, pyproject.toml, -r, src/]
         additional_dependencies: ["bandit[toml]"]
 
-  # Dockerfile linting (using local installation or skipping if not available)
+  # Dockerfile linting (dual-mode: local binary or Docker fallback)
+  # See scripts/hadolint-check.sh for implementation details
   - repo: local
     hooks:
-      - id: hadolint-docker
-        name: Lint Dockerfiles
-        entry: bash -c 'command -v hadolint >/dev/null 2>&1 && hadolint "$@" || echo "hadolint not installed, skipping..."' --
-        language: system
+      - id: hadolint
+        name: Lint Dockerfiles (hadolint)
+        entry: ./scripts/hadolint-check.sh
+        language: script
         types: [dockerfile]
         pass_filenames: true
 

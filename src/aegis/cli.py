@@ -17,7 +17,7 @@ Commands:
 import asyncio
 import sys
 from collections.abc import Callable
-from typing import Any, ParamSpec, TypeVar
+from typing import Any, NoReturn, ParamSpec, TypeVar
 
 import typer
 from prometheus_client import start_http_server
@@ -327,7 +327,7 @@ def analyze(
             )
 
         # Check for errors
-        def _exit_on_error(error_msg: str) -> None:
+        def _exit_on_error(error_msg: str) -> NoReturn:
             """Exit with error message."""
             console.print(f"\n[bold red]Analysis Error:[/bold red] {error_msg}\n")
             log.exception("analysis_failed")

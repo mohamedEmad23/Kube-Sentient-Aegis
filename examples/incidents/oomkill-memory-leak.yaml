@@ -65,7 +65,7 @@ spec:
               name: http
           env:
             - name: DATABASE_URL
-              value: "postgresql://demo:demo123@demo-db:5432/demoapp"  # pragma: allowlist secret
+              value: "postgresql://demo:demo123@demo-db:5432/demoapp"  # pragma: allowlist secret - Demo credentials for incident simulation
             - name: REDIS_URL
               value: "redis://demo-redis:6379/0"
           resources:
