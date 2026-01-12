@@ -7,8 +7,9 @@ Defines the complete multi-agent workflow using LangGraph's StateGraph:
 - Async execution with proper error handling
 """
 
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
+from langchain_core.runnables import RunnableConfig
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph import START, StateGraph
 
@@ -153,10 +154,12 @@ async def analyze_incident(
             msg = "thread_id required when use_checkpoint=True"
             raise ValueError(msg)
 
-        config = {"configurable": {"thread_id": thread_id}}
-        result = await incident_workflow_with_checkpoint.ainvoke(state, config=config)
+        config: RunnableConfig = {"configurable": {"thread_id": thread_id}}
+        raw_result = await incident_workflow_with_checkpoint.ainvoke(state, config=config)
+        result = cast(IncidentState, raw_result)
     else:
-        result = await incident_workflow.ainvoke(state)
+        raw_result = await incident_workflow.ainvoke(state)
+        result = cast(IncidentState, raw_result)
 
     log.info(
         "incident_analysis_completed",
@@ -165,9 +168,7 @@ async def analyze_incident(
         error=result.get("error"),
     )
 
-    # Ensure we return proper IncidentState type
-    final_state: IncidentState = result
-    return final_state
+    return result
 
 
 __all__ = [

@@ -136,6 +136,7 @@ async def test_rca_agent_output_structure():
     )
 
     rca = result["rca_result"]
+    assert rca is not None, "RCA result should not be None"
     assert isinstance(rca.root_cause, str)
     assert isinstance(rca.severity, IncidentSeverity)
     assert isinstance(rca.confidence_score, float)
@@ -156,6 +157,7 @@ async def test_solution_agent_output_structure():
     # Only check if solution was generated
     if result.get("fix_proposal"):
         fix = result["fix_proposal"]
+        assert fix is not None, "Fix proposal should not be None when present"
         assert isinstance(fix.description, str)
         assert isinstance(fix.commands, list)
         assert all(isinstance(cmd, str) for cmd in fix.commands)
@@ -173,6 +175,7 @@ async def test_verifier_agent_output_structure():
     # Only check if verification plan was generated
     if result.get("verification_plan"):
         verify = result["verification_plan"]
+        assert verify is not None, "Verification plan should not be None when present"
         assert isinstance(verify.verification_type, str)
         assert isinstance(verify.test_scenarios, list)
         assert isinstance(verify.success_criteria, list)
