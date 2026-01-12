@@ -1,0 +1,110 @@
+# Demo Database - PostgreSQL
+# Simple PostgreSQL instance for the demo application
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: demo-db-init
+  namespace: production
+data:
+  init.sql: |
+    CREATE TABLE IF NOT EXISTS items (
+      id SERIAL PRIMARY KEY,
+      name VARCHAR(255) NOT NULL,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
+    INSERT INTO items (name) VALUES ('Demo Item 1'), ('Demo Item 2');
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: demo-db-secrets
+  namespace: production
+type: Opaque
+stringData:
+  POSTGRES_USER: demo
+  POSTGRES_PASSWORD: demo123  # pragma: allowlist secret
+  POSTGRES_DB: demoapp
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: demo-db
+  namespace: production
+  labels:
+    app: demo-db
+    app.kubernetes.io/name: demo-db
+    app.kubernetes.io/component: database
+    app.kubernetes.io/part-of: aegis-demo
+spec:
+  serviceName: demo-db
+  replicas: 1
+  selector:
+    matchLabels:
+      app: demo-db
+  template:
+    metadata:
+      labels:
+        app: demo-db
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:15-alpine
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 5432
+              name: postgres
+          envFrom:
+            - secretRef:
+                name: demo-db-secrets
+          volumeMounts:
+            - name: init-scripts
+              mountPath: /docker-entrypoint-initdb.d
+            - name: data
+              mountPath: /var/lib/postgresql/data
+          resources:
+            requests:
+              memory: "128Mi"
+              cpu: "100m"
+            limits:
+              memory: "256Mi"
+              cpu: "500m"
+          livenessProbe:
+            exec:
+              command:
+                - pg_isready
+                - -U
+                - demo
+            initialDelaySeconds: 30
+            periodSeconds: 10
+          readinessProbe:
+            exec:
+              command:
+                - pg_isready
+                - -U
+                - demo
+            initialDelaySeconds: 5
+            periodSeconds: 5
+      volumes:
+        - name: init-scripts
+          configMap:
+            name: demo-db-init
+        - name: data
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: demo-db
+  namespace: production
+  labels:
+    app: demo-db
+spec:
+  type: ClusterIP
+  ports:
+    - port: 5432
+      targetPort: 5432
+      protocol: TCP
+      name: postgres
+  selector:
+    app: demo-db

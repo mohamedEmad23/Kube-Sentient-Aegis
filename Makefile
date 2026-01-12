@@ -1,4 +1,4 @@
-.PHONY: help install install-dev setup lint format type-check test test-cov test-unit test-integration clean pre-commit gpu-check ollama-check docs build publish
+.PHONY: help install install-dev setup lint format type-check test test-cov test-unit test-integration clean pre-commit gpu-check ollama-check docs build publish demo-setup demo-cluster-create demo-cluster-delete demo-app-deploy demo-incident-inject demo-clean
 
 # Default shell
 SHELL := /bin/bash
@@ -303,3 +303,124 @@ info: ## Show project info
 	@echo ""
 	@echo "Installed packages:"
 	@$(UV) pip list --format=freeze | head -20
+
+##@ Demo Environment
+
+demo-setup: ## Install all demo prerequisites (Kind, K8sGPT, vCluster, Ollama)
+	@echo -e "$(BLUE)Setting up demo environment...$(NC)"
+	@chmod +x scripts/demo-setup.sh
+	@./scripts/demo-setup.sh
+
+demo-cluster-create: ## Create Kind cluster for demos
+	@echo -e "$(BLUE)Creating Kind cluster 'aegis-demo'...$(NC)"
+	@kind create cluster --config examples/cluster/kind-config.yaml --name aegis-demo
+	@kubectl wait --for=condition=Ready nodes --all --timeout=120s
+	@echo -e "$(GREEN)✓ Cluster created$(NC)"
+
+demo-cluster-delete: ## Delete Kind demo cluster
+	@echo -e "$(YELLOW)Deleting Kind cluster 'aegis-demo'...$(NC)"
+	@kind delete cluster --name aegis-demo
+	@echo -e "$(GREEN)✓ Cluster deleted$(NC)"
+
+demo-app-deploy: ## Deploy demo application to cluster
+	@echo -e "$(BLUE)Deploying demo application...$(NC)"
+	@kubectl apply -k examples/demo-app/
+	@echo -e "$(BLUE)Waiting for pods to be ready...$(NC)"
+	@kubectl wait --for=condition=Ready pod -l app=demo-db -n production --timeout=120s || true
+	@kubectl wait --for=condition=Ready pod -l app=demo-redis -n production --timeout=60s || true
+	@kubectl wait --for=condition=Ready pod -l app=demo-api -n production --timeout=120s || true
+	@echo -e "$(GREEN)✓ Demo app deployed$(NC)"
+	@kubectl get pods -n production
+
+demo-app-status: ## Show status of demo application
+	@echo -e "$(BLUE)Demo Application Status$(NC)"
+	@echo "========================"
+	@kubectl get pods -n production -o wide
+	@echo ""
+	@echo -e "$(BLUE)Services:$(NC)"
+	@kubectl get svc -n production
+	@echo ""
+	@echo -e "$(BLUE)Recent Events:$(NC)"
+	@kubectl get events -n production --sort-by='.lastTimestamp' | tail -10
+
+demo-incident-crashloop: ## Inject CrashLoopBackOff incident
+	@echo -e "$(YELLOW)Injecting CrashLoopBackOff incident...$(NC)"
+	@kubectl apply -f examples/incidents/crashloop-missing-env.yaml
+	@echo -e "$(GREEN)✓ Incident injected. Run: kubectl get pods -n production -w$(NC)"
+
+demo-incident-oomkill: ## Inject OOMKilled incident
+	@echo -e "$(YELLOW)Injecting OOMKilled incident...$(NC)"
+	@kubectl apply -f examples/incidents/oomkill-memory-leak.yaml
+	@echo -e "$(GREEN)✓ Incident injected. Run: kubectl get pods -n production -w$(NC)"
+
+demo-incident-imagepull: ## Inject ImagePullBackOff incident
+	@echo -e "$(YELLOW)Injecting ImagePullBackOff incident...$(NC)"
+	@kubectl apply -f examples/incidents/imagepull-bad-tag.yaml
+	@echo -e "$(GREEN)✓ Incident injected. Run: kubectl get pods -n production -w$(NC)"
+
+demo-incident-pending: ## Inject Pending pod incident
+	@echo -e "$(YELLOW)Injecting Pending pod incident...$(NC)"
+	@kubectl apply -f examples/incidents/pending-no-resources.yaml
+	@echo -e "$(GREEN)✓ Incident injected. Run: kubectl describe pod -l app=demo-api -n production$(NC)"
+
+demo-incident-liveness: ## Inject Liveness probe failure incident
+	@echo -e "$(YELLOW)Injecting Liveness probe failure...$(NC)"
+	@kubectl apply -f examples/incidents/liveness-failure.yaml
+	@echo -e "$(GREEN)✓ Incident injected. Run: kubectl get pods -n production -w$(NC)"
+
+demo-incident-reset: ## Reset demo app to healthy state
+	@echo -e "$(BLUE)Resetting demo app to healthy state...$(NC)"
+	@kubectl apply -f examples/demo-app/demo-api.yaml
+	@kubectl rollout restart deployment/demo-api -n production
+	@kubectl wait --for=condition=Ready pod -l app=demo-api -n production --timeout=120s
+	@echo -e "$(GREEN)✓ Demo app reset to healthy state$(NC)"
+
+demo-k8sgpt-analyze: ## Run K8sGPT analysis on cluster
+	@echo -e "$(BLUE)Running K8sGPT analysis...$(NC)"
+	@k8sgpt analyze --filter=Pod --namespace=production --explain
+
+demo-k8sgpt-config: ## Configure K8sGPT with Ollama backend
+	@echo -e "$(BLUE)Configuring K8sGPT with Ollama...$(NC)"
+	@k8sgpt auth remove --backend ollama 2>/dev/null || true
+	@k8sgpt auth add --backend ollama --baseurl http://localhost:11434 --model phi3:mini
+	@echo -e "$(GREEN)✓ K8sGPT configured$(NC)"
+
+demo-aegis-analyze: ## Run AEGIS analysis on demo-api pod
+	@echo -e "$(BLUE)Running AEGIS analysis...$(NC)"
+	$(UV) run aegis analyze pod/demo-api --namespace production
+
+demo-shadow-create: ## Create a shadow environment for testing
+	@echo -e "$(BLUE)Creating shadow environment...$(NC)"
+	@vcluster create shadow-test -n aegis-shadows -f examples/shadow/vcluster-template.yaml --connect=false
+	@echo -e "$(GREEN)✓ Shadow environment created$(NC)"
+
+demo-shadow-list: ## List shadow environments
+	@echo -e "$(BLUE)Shadow Environments:$(NC)"
+	@vcluster list
+
+demo-shadow-delete: ## Delete test shadow environment
+	@echo -e "$(YELLOW)Deleting shadow environment...$(NC)"
+	@vcluster delete shadow-test -n aegis-shadows
+	@echo -e "$(GREEN)✓ Shadow environment deleted$(NC)"
+
+demo-clean: ## Clean up all demo resources
+	@echo -e "$(YELLOW)Cleaning up demo resources...$(NC)"
+	@kubectl delete namespace production --ignore-not-found=true || true
+	@kubectl delete namespace aegis-shadows --ignore-not-found=true || true
+	@kubectl delete namespace aegis-system --ignore-not-found=true || true
+	@echo -e "$(GREEN)✓ Demo resources cleaned$(NC)"
+
+demo-full: demo-cluster-create demo-app-deploy ## Full demo setup (cluster + app)
+	@echo ""
+	@echo -e "$(GREEN)╔══════════════════════════════════════════════════════════════╗$(NC)"
+	@echo -e "$(GREEN)║                    Demo Environment Ready!                   ║$(NC)"
+	@echo -e "$(GREEN)╠══════════════════════════════════════════════════════════════╣$(NC)"
+	@echo -e "$(GREEN)║  Demo API: http://localhost:30000                            ║$(NC)"
+	@echo -e "$(GREEN)║                                                              ║$(NC)"
+	@echo -e "$(GREEN)║  Inject an incident:                                         ║$(NC)"
+	@echo -e "$(GREEN)║    make demo-incident-crashloop                              ║$(NC)"
+	@echo -e "$(GREEN)║    make demo-incident-oomkill                                ║$(NC)"
+	@echo -e "$(GREEN)║                                                              ║$(NC)"
+	@echo -e "$(GREEN)║  Analyze with AEGIS:                                         ║$(NC)"
+	@echo -e "$(GREEN)║    make demo-aegis-analyze                                   ║$(NC)"
+	@echo -e "$(GREEN)╚══════════════════════════════════════════════════════════════╝$(NC)"

@@ -1,0 +1,102 @@
+# INCIDENT: Liveness Probe Failure - Endpoint Returns 500
+#
+# Scenario: Deploy demo-api with health endpoint that returns 500
+# Expected: Pod gets restarted repeatedly by kubelet
+#
+# AEGIS Expected Detection:
+#   Root Cause: Liveness probe failing - /health returns HTTP 500
+#   Severity: HIGH
+#   Fix: Fix application health endpoint to return 200
+#
+# Usage:
+#   kubectl apply -f liveness-failure.yaml
+#   kubectl get pods -n production -w  # Watch restart count increase
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: demo-api
+  namespace: production
+  labels:
+    app: demo-api
+    incident-type: liveness
+  annotations:
+    aegis.io/incident-scenario: "liveness-failure"
+    aegis.io/expected-fix: "Fix /health endpoint to return 200 instead of 500"
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: demo-api
+  template:
+    metadata:
+      labels:
+        app: demo-api
+        version: v1-unhealthy
+    spec:
+      containers:
+        - name: api
+          image: python:3.12-slim
+          imagePullPolicy: IfNotPresent
+          command:
+            - /bin/sh
+            - -c
+            - |
+              pip install fastapi uvicorn --quiet 2>/dev/null
+              cat > /app/main.py << 'EOF'
+              from fastapi import FastAPI
+              from fastapi.responses import JSONResponse
+
+              app = FastAPI()
+
+              @app.get("/")
+              async def root():
+                  return {"status": "running"}
+
+              @app.get("/health")
+              async def health():
+                  # INTENTIONALLY BROKEN: Always returns 500
+                  return JSONResponse(
+                      status_code=500,
+                      content={"status": "unhealthy", "error": "Database connection failed"}
+                  )
+
+              @app.get("/ready")
+              async def ready():
+                  return {"ready": True}
+
+              if __name__ == "__main__":
+                  import uvicorn
+                  uvicorn.run(app, host="0.0.0.0", port=8000)
+              EOF
+              python /app/main.py
+          ports:
+            - containerPort: 8000
+              name: http
+          env:
+            - name: DATABASE_URL
+              value: "postgresql://demo:demo123@demo-db:5432/demoapp"  # pragma: allowlist secret
+            - name: REDIS_URL
+              value: "redis://demo-redis:6379/0"
+          resources:
+            requests:
+              memory: "64Mi"
+              cpu: "50m"
+            limits:
+              memory: "128Mi"
+              cpu: "100m"
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 2  # Fail fast for demo
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: 8000
+            initialDelaySeconds: 3
+            periodSeconds: 3
+      restartPolicy: Always

@@ -1,0 +1,33 @@
+# Production namespace for demo application
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: production
+  labels:
+    app.kubernetes.io/part-of: aegis-demo
+    aegis.io/monitored: "true"
+---
+# AEGIS system namespace
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: aegis-system
+  labels:
+    app.kubernetes.io/part-of: aegis
+---
+# Shadow environments namespace
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: aegis-shadows
+  labels:
+    app.kubernetes.io/part-of: aegis
+    aegis.io/shadow-environment: "true"
+---
+# Monitoring namespace
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: monitoring
+  labels:
+    app.kubernetes.io/part-of: aegis-demo
