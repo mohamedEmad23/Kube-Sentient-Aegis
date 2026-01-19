@@ -22,6 +22,7 @@ Usage:
 """
 
 import argparse
+import logging
 import sys
 from typing import NoReturn
 
@@ -108,9 +109,9 @@ def main(
 
     # Configure logging format
     if settings.is_production or settings.observability.log_format == "json":
-        kopf_settings.posting.level = "INFO"
+        kopf_settings.posting.level = logging.INFO
     else:
-        kopf_settings.posting.level = "DEBUG" if settings.debug else "INFO"
+        kopf_settings.posting.level = logging.DEBUG if settings.debug else logging.INFO
 
     # Configure peering for multi-instance coordination
     if peering_name:
@@ -133,12 +134,10 @@ def main(
         # Start the operator (this blocks until stopped)
         kopf.run(
             settings=kopf_settings,
-            standalone=True,  # Run as standalone operator
+            standalone=not peering_name,  # Run as standalone operator if no peering
             namespace=namespace,  # Monitor specific namespace or all
             liveness_endpoint=f"http://0.0.0.0:{liveness_port}/healthz",
             priority=priority,
-            peering=peering_name,
-            dev=dev_mode,  # Development mode (pauses other operators)
         )
 
     except KeyboardInterrupt:
