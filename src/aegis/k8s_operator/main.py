@@ -21,6 +21,7 @@ Usage:
     python -m aegis.k8s_operator.main --peering=aegis-operator-cluster
 """
 
+import argparse
 import sys
 from typing import NoReturn
 
@@ -165,7 +166,6 @@ def cli() -> NoReturn:
     It parses command-line arguments and starts the operator.
     For advanced configuration, use main() directly.
     """
-    import argparse
 
     parser = argparse.ArgumentParser(
         description="AEGIS Kubernetes Operator - AI-driven incident remediation",

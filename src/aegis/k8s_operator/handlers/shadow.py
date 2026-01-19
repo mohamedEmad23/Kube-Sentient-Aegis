@@ -10,6 +10,7 @@ This module provides:
 - Integration with VClusterManager (when implemented)
 """
 
+from datetime import UTC, datetime
 from typing import Any
 
 import kopf
@@ -58,7 +59,7 @@ async def shadow_verification_daemon(
     spec: Spec,
     name: str,
     namespace: str,
-    logger: Logger,
+    _logger: Logger,
     stopped: DaemonStopped,
     patch: Patch,
     **_kwargs: Any,
@@ -93,7 +94,7 @@ async def shadow_verification_daemon(
     """
     _ = spec  # Unused but required by kopf signature
 
-    logger.info(
+    log.info(
         "🔬 Shadow verification daemon started",
         deployment=name,
         namespace=namespace,
@@ -104,7 +105,7 @@ async def shadow_verification_daemon(
 
     # Mark daemon as active in deployment annotations
     patch.metadata.annotations["aegis.io/shadow-daemon-active"] = "true"
-    patch.metadata.annotations["aegis.io/shadow-daemon-started"] = kopf.utcnow().isoformat()
+    patch.metadata.annotations["aegis.io/shadow-daemon-started"] = datetime.now(UTC).isoformat()
 
     try:
         # Main daemon loop
@@ -115,11 +116,11 @@ async def shadow_verification_daemon(
             if proposal_key in _ai_proposals:
                 proposal = _ai_proposals[proposal_key]
 
-                logger.info(
+                log.info(
                     "🧪 AI proposal detected for shadow testing",
                     deployment=name,
-                    proposal_type=proposal.get("action"),
-                    confidence=proposal.get("confidence", 0.0),
+                    action=proposal.get("action"),
+                    confidence=float(proposal.get("confidence", 0.0)),
                 )
 
                 # Track shadow verification duration
@@ -129,7 +130,6 @@ async def shadow_verification_daemon(
                         deployment_name=name,
                         namespace=namespace,
                         proposal=proposal,
-                        logger=logger,
                         stopped=stopped,
                     )
 
@@ -140,7 +140,7 @@ async def shadow_verification_daemon(
                         fix_type=proposal.get("action", "unknown"),
                     ).inc()
 
-                    logger.info(
+                    log.info(
                         "✅ Shadow test PASSED - Approving for production",
                         deployment=name,
                         proposal=proposal.get("action"),
@@ -149,15 +149,15 @@ async def shadow_verification_daemon(
                     # Store success result
                     _shadow_results[proposal_key] = {
                         "status": "passed",
-                        "timestamp": kopf.utcnow().isoformat(),
+                        "timestamp": datetime.now(UTC).isoformat(),
                         "proposal": proposal,
                     }
 
                     # Update deployment annotation with approval
                     patch.metadata.annotations["aegis.io/last-shadow-test"] = "passed"
-                    patch.metadata.annotations["aegis.io/last-test-time"] = (
-                        kopf.utcnow().isoformat()
-                    )
+                    patch.metadata.annotations["aegis.io/last-test-time"] = datetime.now(
+                        UTC
+                    ).isoformat()
 
                 else:
                     shadow_verifications_total.labels(
@@ -165,7 +165,7 @@ async def shadow_verification_daemon(
                         fix_type=proposal.get("action", "unknown"),
                     ).inc()
 
-                    logger.error(
+                    log.error(
                         "❌ Shadow test FAILED - Rejecting proposal",
                         deployment=name,
                         proposal=proposal.get("action"),
@@ -173,7 +173,7 @@ async def shadow_verification_daemon(
 
                     _shadow_results[proposal_key] = {
                         "status": "failed",
-                        "timestamp": kopf.utcnow().isoformat(),
+                        "timestamp": datetime.now(UTC).isoformat(),
                         "proposal": proposal,
                     }
 
@@ -188,14 +188,14 @@ async def shadow_verification_daemon(
 
     finally:
         # Cleanup on daemon exit
-        logger.info(
+        log.info(
             "🛑 Shadow verification daemon stopped",
             deployment=name,
         )
         shadow_environments_active.labels(runtime="vcluster").dec()
 
         patch.metadata.annotations["aegis.io/shadow-daemon-active"] = "false"
-        patch.metadata.annotations["aegis.io/shadow-daemon-stopped"] = kopf.utcnow().isoformat()
+        patch.metadata.annotations["aegis.io/shadow-daemon-stopped"] = datetime.now(UTC).isoformat()
 
 
 # ============================================================================
@@ -213,7 +213,7 @@ async def periodic_health_check_timer(
     name: str,
     namespace: str,
     status: Status,
-    logger: Logger,
+    _logger: Logger,
     pod_health_index: Index,  # Injected from index.py
     **_kwargs: Any,
 ) -> None:
@@ -232,7 +232,7 @@ async def periodic_health_check_timer(
         pod_health_index: Injected index of pod health (from index.py)
         **kwargs: Additional kopf kwargs
     """
-    logger.debug(
+    log.debug(
         "🔍 Running periodic health check",
         deployment=name,
         namespace=namespace,
@@ -242,7 +242,7 @@ async def periodic_health_check_timer(
     selector = spec.get("selector", {}).get("matchLabels", {})
 
     if not selector:
-        logger.warning("deployment_no_selector", deployment=name)
+        log.warning("deployment_no_selector", deployment=name)
         return
 
     # Find pods matching deployment selector using the index
@@ -263,19 +263,19 @@ async def periodic_health_check_timer(
     desired_replicas = spec.get("replicas", 1)
 
     if ready_replicas < desired_replicas:
-        logger.warning(
+        log.warning(
             "⚠️ Deployment has insufficient ready replicas",
             deployment=name,
-            ready=ready_replicas,
-            desired=desired_replicas,
+            ready=int(ready_replicas),
+            desired=int(desired_replicas),
         )
 
     if unhealthy_pods:
-        logger.warning(
+        log.warning(
             "⚠️ Unhealthy pods detected in deployment",
             deployment=name,
-            unhealthy_count=len(unhealthy_pods),
-            pods=unhealthy_pods[:5],  # Log first 5
+            count=len(unhealthy_pods),
+            pods=str(unhealthy_pods[:5]),
         )
 
 
@@ -294,7 +294,7 @@ async def ai_driven_scaling_timer(
     name: str,
     namespace: str,
     patch: Patch,
-    logger: Logger,
+    _logger: Logger,
     **_kwargs: Any,
 ) -> None:
     """AI-driven predictive scaling based on load patterns.
@@ -314,17 +314,17 @@ async def ai_driven_scaling_timer(
 
     current_replicas = spec.get("replicas", 1)
 
-    logger.info(
+    log.info(
         "📊 Running AI-driven scaling analysis",
         deployment=name,
-        current_replicas=current_replicas,
+        current_replicas=int(current_replicas),
     )
 
     # TODO: Integrate with real AI model for load prediction
     # For now, use a simple heuristic based on time
     predicted_load = _predict_load(name, namespace)
 
-    logger.info(
+    log.info(
         "🔮 AI load prediction",
         deployment=name,
         predicted_load=predicted_load,
@@ -334,12 +334,12 @@ async def ai_driven_scaling_timer(
     if predicted_load > HIGH_LOAD_THRESHOLD:  # High load predicted
         new_replicas = min(current_replicas + 2, 10)  # Max 10 replicas
         if new_replicas > current_replicas:
-            logger.info(
+            log.info(
                 "📈 AI recommends scaling UP",
                 deployment=name,
-                current=current_replicas,
-                new=new_replicas,
-                reason=f"Predicted load: {predicted_load:.2f}",
+                current=int(current_replicas),
+                new=int(new_replicas),
+                predicted_load=predicted_load,
             )
 
             # Create AI proposal for shadow testing
@@ -348,18 +348,18 @@ async def ai_driven_scaling_timer(
                 "changes": {"replicas": new_replicas},
                 "reason": f"High predicted load: {predicted_load:.2f}",
                 "confidence": 0.85,
-                "timestamp": kopf.utcnow().isoformat(),
+                "timestamp": datetime.now(UTC).isoformat(),
             }
 
     elif predicted_load < LOW_LOAD_THRESHOLD:  # Low load predicted
         new_replicas = max(current_replicas - 1, 1)  # Min 1 replica
         if new_replicas < current_replicas:
-            logger.info(
+            log.info(
                 "📉 AI recommends scaling DOWN",
                 deployment=name,
-                current=current_replicas,
-                new=new_replicas,
-                reason=f"Predicted load: {predicted_load:.2f}",
+                current=int(current_replicas),
+                new=int(new_replicas),
+                predicted_load=predicted_load,
             )
 
             _ai_proposals[f"{namespace}/{name}"] = {
@@ -367,7 +367,7 @@ async def ai_driven_scaling_timer(
                 "changes": {"replicas": new_replicas},
                 "reason": f"Low predicted load: {predicted_load:.2f}",
                 "confidence": 0.80,
-                "timestamp": kopf.utcnow().isoformat(),
+                "timestamp": datetime.now(UTC).isoformat(),
             }
 
 
@@ -380,7 +380,6 @@ async def _run_shadow_verification(
     deployment_name: str,
     namespace: str,
     proposal: dict[str, Any],
-    logger: Logger,
     stopped: DaemonStopped,
 ) -> bool:
     """Internal: Run shadow verification workflow.
@@ -392,7 +391,6 @@ async def _run_shadow_verification(
         deployment_name: Name of the deployment
         namespace: Namespace
         proposal: AI proposal dict with changes
-        logger: Logger instance
         stopped: Stopped signal for graceful cancellation
 
     Returns:
@@ -400,7 +398,7 @@ async def _run_shadow_verification(
     """
     _ = (namespace, proposal)  # Unused but kept for future implementation
 
-    logger.info(
+    log.info(
         "🔬 Creating shadow environment",
         deployment=deployment_name,
         namespace=namespace,
@@ -409,30 +407,27 @@ async def _run_shadow_verification(
     # Simulate shadow environment creation (5 seconds)
     for _i in range(SHADOW_ENV_CREATION_SECONDS):
         if stopped:
-            logger.warning("shadow_test_cancelled", deployment=deployment_name)
+            log.warning("shadow_test_cancelled", deployment=deployment_name)
             return False
         await stopped.wait(timeout=1.0)
 
-    logger.info("✅ Shadow environment created")
+    log.info("✅ Shadow environment created")
 
     # Monitor shadow health (configurable duration)
     monitor_duration = settings.shadow.verification_timeout
-    logger.info(
-        "👀 Monitoring shadow environment",
-        duration_seconds=monitor_duration,
-    )
+    log.info("👀 Monitoring shadow environment", duration_seconds=int(monitor_duration))
 
     # Simulate monitoring (check health every 10 seconds)
     elapsed = 0
     while elapsed < monitor_duration:
         if stopped:
-            logger.warning("shadow_monitoring_cancelled")
+            log.warning("shadow_monitoring_cancelled")
             return False
 
         await stopped.wait(timeout=SHADOW_HEALTH_CHECK_INTERVAL)
         elapsed += SHADOW_HEALTH_CHECK_INTERVAL
 
-    logger.info("✅ Shadow monitoring complete - test passed")
+    log.info("✅ Shadow monitoring complete - test passed")
     return True
 
 
@@ -449,7 +444,7 @@ def _predict_load(_deployment_name: str, _namespace: str) -> float:
         float: Predicted load (0.0 to 1.0)
     """
     # Simple heuristic based on time of day
-    current_hour = kopf.utcnow().hour
+    current_hour = datetime.now(UTC).hour
 
     # Business hours (9am-5pm UTC): high load
     if BUSINESS_HOURS_START <= current_hour <= BUSINESS_HOURS_END:

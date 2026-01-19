@@ -11,6 +11,7 @@ This module provides:
 """
 
 import asyncio
+from datetime import UTC, datetime
 from typing import Any
 
 import kopf
@@ -64,7 +65,7 @@ async def handle_pod_creation(
     annotations: Annotations,
     body: Body,
     patch: Patch,
-    logger: Logger,
+    _logger: Logger,
     **_kwargs: Any,
 ) -> dict[str, Any] | None:
     """Handle new pod creation with AEGIS monitoring enabled.
@@ -97,7 +98,7 @@ async def handle_pod_creation(
     """
     _ = (spec, meta, labels, annotations, body)  # Unused but required by kopf signature
 
-    logger.info(
+    log.info(
         "🤖 AEGIS monitoring enabled for pod",
         pod=name,
         namespace=namespace,
@@ -105,14 +106,14 @@ async def handle_pod_creation(
     )
 
     # Add AEGIS tracking annotation
-    patch.metadata.annotations["aegis.io/monitored-since"] = kopf.utcnow().isoformat()
+    patch.metadata.annotations["aegis.io/monitored-since"] = datetime.now(UTC).isoformat()
     patch.metadata.annotations["aegis.io/version"] = settings.app_version
 
     # Check if pod is already in a failed state
     phase = status.get("phase", "Unknown")
 
     if phase in ["Failed", "Unknown"]:
-        logger.warning(
+        log.warning(
             "⚠️ Pod in failed state immediately after creation",
             pod=name,
             phase=phase,
@@ -131,7 +132,6 @@ async def handle_pod_creation(
                 resource_name=name,
                 namespace=namespace,
                 phase=phase,
-                logger=logger,
             ),
             name=f"analyze_pod_{namespace}_{name}",
         )
@@ -142,7 +142,7 @@ async def handle_pod_creation(
     return {
         "aegis-status": "monitoring-initialized",
         "pod-phase": phase,
-        "monitored-at": kopf.utcnow().isoformat(),
+        "monitored-at": datetime.now(UTC).isoformat(),
     }
 
 
@@ -158,7 +158,7 @@ async def handle_pod_phase_change(
     namespace: str,
     status: Status,
     patch: Patch,
-    logger: Logger,
+    _logger: Logger,
     **_kwargs: Any,
 ) -> dict[str, Any] | None:
     """Handle pod phase transitions and detect incidents.
@@ -185,7 +185,7 @@ async def handle_pod_phase_change(
     Returns:
         dict: Analysis results to store in pod status
     """
-    logger.info(
+    log.info(
         "📊 Pod phase transition detected",
         pod=name,
         old_phase=old,
@@ -196,7 +196,7 @@ async def handle_pod_phase_change(
     unhealthy_phases = ["Failed", "Unknown"]
 
     if new in unhealthy_phases:
-        logger.error(
+        log.error(
             "❌ Unhealthy pod phase detected",
             pod=name,
             phase=new,
@@ -216,7 +216,6 @@ async def handle_pod_phase_change(
                 resource_name=name,
                 namespace=namespace,
                 phase=new or "Unknown",
-                logger=logger,
             ),
             name=f"analyze_pod_phase_{namespace}_{name}",
         )
@@ -224,13 +223,13 @@ async def handle_pod_phase_change(
         task.add_done_callback(_background_tasks.discard)
 
         # Update patch with incident marker
-        patch.metadata.annotations["aegis.io/incident-detected"] = kopf.utcnow().isoformat()
+        patch.metadata.annotations["aegis.io/incident-detected"] = datetime.now(UTC).isoformat()
         patch.metadata.annotations["aegis.io/incident-phase"] = new or "Unknown"
 
         return {
             "incident-detected": True,
             "incident-phase": new,
-            "detection-time": kopf.utcnow().isoformat(),
+            "detection-time": datetime.now(UTC).isoformat(),
         }
 
     # Check container statuses for waiting states
@@ -240,7 +239,7 @@ async def handle_pod_phase_change(
         if waiting:
             reason = waiting.get("reason", "Unknown")
             if reason in ["CrashLoopBackOff", "ImagePullBackOff", "ErrImagePull"]:
-                logger.error(
+                log.error(
                     "❌ Container waiting with error",
                     pod=name,
                     container=container_status.get("name"),
@@ -259,7 +258,6 @@ async def handle_pod_phase_change(
                         resource_name=name,
                         namespace=namespace,
                         phase=reason,
-                        logger=logger,
                     ),
                     name=f"analyze_container_{namespace}_{name}_{reason}",
                 )
@@ -271,7 +269,7 @@ async def handle_pod_phase_change(
                 return {
                     "container-error": reason,
                     "container-name": container_status.get("name"),
-                    "detection-time": kopf.utcnow().isoformat(),
+                    "detection-time": datetime.now(UTC).isoformat(),
                 }
 
     return None
@@ -290,7 +288,6 @@ async def handle_deployment_creation(
     name: str,
     namespace: str,
     patch: Patch,
-    logger: Logger,
     **_kwargs: Any,
 ) -> dict[str, Any]:
     """Handle new deployment creation with AEGIS monitoring.
@@ -313,7 +310,7 @@ async def handle_deployment_creation(
     """
     _ = (meta, status)  # Unused but required by kopf signature
 
-    logger.info(
+    log.info(
         "🚀 AEGIS monitoring enabled for deployment",
         deployment=name,
         namespace=namespace,
@@ -322,13 +319,13 @@ async def handle_deployment_creation(
     desired_replicas = spec.get("replicas", 1)
 
     # Add monitoring annotations
-    patch.metadata.annotations["aegis.io/monitored-since"] = kopf.utcnow().isoformat()
+    patch.metadata.annotations["aegis.io/monitored-since"] = datetime.now(UTC).isoformat()
     patch.metadata.annotations["aegis.io/desired-replicas"] = str(desired_replicas)
 
     return {
         "aegis-status": "monitoring-initialized",
         "desired-replicas": desired_replicas,
-        "monitored-at": kopf.utcnow().isoformat(),
+        "monitored-at": datetime.now(UTC).isoformat(),
     }
 
 
@@ -344,7 +341,7 @@ async def handle_deployment_unavailable_replicas(
     namespace: str,
     status: Status,
     patch: Patch,
-    logger: Logger,
+    _logger: Logger,
     **_kwargs: Any,
 ) -> dict[str, Any] | None:
     """Handle changes in unavailable replicas count.
@@ -366,7 +363,7 @@ async def handle_deployment_unavailable_replicas(
         dict: Analysis metadata if incident detected
     """
     if new and new > 0:
-        logger.warning(
+        log.warning(
             "⚠️ Deployment has unavailable replicas",
             deployment=name,
             unavailable=new,
@@ -380,7 +377,7 @@ async def handle_deployment_unavailable_replicas(
             desired_replicas > 0
             and (new / desired_replicas) > CRITICAL_REPLICAS_UNAVAILABLE_THRESHOLD
         ):
-            logger.error(
+            log.error(
                 "❌ Critical: More than 50% replicas unavailable",
                 deployment=name,
                 unavailable=new,
@@ -400,20 +397,19 @@ async def handle_deployment_unavailable_replicas(
                     namespace=namespace,
                     unavailable=new,
                     desired=desired_replicas,
-                    logger=logger,
                 ),
                 name=f"analyze_deployment_{namespace}_{name}",
             )
             _background_tasks.add(task)
             task.add_done_callback(_background_tasks.discard)
 
-            patch.metadata.annotations["aegis.io/incident-detected"] = kopf.utcnow().isoformat()
+            patch.metadata.annotations["aegis.io/incident-detected"] = datetime.now(UTC).isoformat()
 
             return {
                 "incident-type": "unavailable-replicas",
                 "unavailable-count": new,
                 "desired-count": desired_replicas,
-                "detection-time": kopf.utcnow().isoformat(),
+                "detection-time": datetime.now(UTC).isoformat(),
             }
 
     return None
@@ -428,7 +424,6 @@ async def _analyze_pod_incident(
     resource_name: str,
     namespace: str,
     phase: str,
-    logger: Logger,
 ) -> None:
     """Internal: Trigger AEGIS analysis workflow for pod incident.
 
@@ -440,12 +435,11 @@ async def _analyze_pod_incident(
         resource_name: Name of the pod
         namespace: Namespace of the pod
         phase: Current phase/error state
-        logger: Logger instance
 
     Raises:
         Exception: Any exception from the analysis workflow
     """
-    logger.info(
+    log.info(
         "🔍 Starting AEGIS analysis for pod incident",
         pod=resource_name,
         phase=phase,
@@ -468,7 +462,7 @@ async def _analyze_pod_incident(
         fix_proposal = result.get("fix_proposal")
 
         if rca_result:
-            logger.info(
+            log.info(
                 "✅ RCA completed",
                 pod=resource_name,
                 root_cause=rca_result.root_cause,
@@ -481,18 +475,17 @@ async def _analyze_pod_incident(
             ).inc()
 
         if fix_proposal:
-            logger.info(
+            log.info(
                 "🔧 Fix proposal generated",
                 pod=resource_name,
                 fix_type=fix_proposal.fix_type.value,
                 confidence=fix_proposal.confidence_score,
             )
 
-    except Exception as error:
-        logger.exception(
+    except Exception:
+        log.exception(
             "❌ AEGIS analysis failed",
             pod=resource_name,
-            error=str(error),
         )
         agent_iterations_total.labels(
             agent_name="pod_incident_analyzer",
@@ -507,7 +500,6 @@ async def _analyze_deployment_incident(
     namespace: str,
     unavailable: int,
     desired: int,
-    logger: Logger,
 ) -> None:
     """Internal: Trigger AEGIS analysis workflow for deployment incident.
 
@@ -516,9 +508,8 @@ async def _analyze_deployment_incident(
         namespace: Namespace
         unavailable: Number of unavailable replicas
         desired: Desired replica count
-        logger: Logger instance
     """
-    logger.info(
+    log.info(
         "🔍 Starting AEGIS analysis for deployment incident",
         deployment=resource_name,
         unavailable=unavailable,
@@ -537,16 +528,15 @@ async def _analyze_deployment_incident(
 
         rca_result = result.get("rca_result")
         if rca_result:
-            logger.info(
+            log.info(
                 "✅ Deployment RCA completed",
                 deployment=resource_name,
                 root_cause=rca_result.root_cause,
                 confidence=rca_result.confidence_score,
             )
 
-    except Exception as error:
-        logger.exception(
+    except Exception:
+        log.exception(
             "❌ Deployment analysis failed",
             deployment=resource_name,
-            error=str(error),
         )
