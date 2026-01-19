@@ -223,6 +223,7 @@ models/
 
 # MCP servers (third-party git repos)
 .mcp/
+tools/
 
 # =============================================================================
 # Project Specific
