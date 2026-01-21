@@ -67,7 +67,7 @@ async def solution_agent(
         resource_type=state["resource_type"],
         resource_name=state["resource_name"],
         namespace=state["namespace"],
-        rca_result=json.dumps(rca_result.model_dump(), indent=2),
+        rca_result=rca_result.model_dump_json(indent=2),
         current_state="unknown",  # TODO: Get from kubectl
         labels="{}",  # TODO: Get from kubectl
     )
@@ -92,12 +92,12 @@ async def solution_agent(
             status="completed",
         ).inc()
 
-        log.info(
-            "solution_agent_completed",
-            fix_type=fix_proposal.fix_type.value,
-            confidence=fix_proposal.confidence_score,
-            commands_count=len(fix_proposal.commands),
-        )
+        # log.info(
+        #     "solution_agent_completed",
+        #     fix_type=fix_proposal.fix_type.value,
+        #     confidence=fix_proposal.confidence_score,
+        #     commands_count=len(fix_proposal.commands),
+        # )
 
         # Update messages
         ai_message = AIMessage(
@@ -112,12 +112,12 @@ async def solution_agent(
         )
 
         if needs_verification:
-            log.info(
-                "solution_requires_verification",
-                severity=rca_result.severity.value,
-                namespace=state["namespace"],
-                risks=len(fix_proposal.risks),
-            )
+            # log.info(
+            #     "solution_requires_verification",
+            #     severity=rca_result.severity.value,
+            #     namespace=state["namespace"],
+            #     risks=len(fix_proposal.risks),
+            # )
             return Command(
                 goto="verifier_agent",
                 update={

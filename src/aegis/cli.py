@@ -268,12 +268,12 @@ def analyze(
         aegis analyze deployment/api --namespace prod
         aegis analyze pod/nginx --auto-fix --export report.md
     """
-    log.info(
-        "analysis_started",
-        resource=resource,
-        namespace=namespace,
-        auto_fix=auto_fix,
-    )
+    # log.info(
+    #     "analysis_started",
+    #     resource=resource,
+    #     namespace=namespace,
+    #     auto_fix=auto_fix,
+    # )
 
     console.print(
         f"\n[bold cyan]Analyzing:[/bold cyan] {resource} in namespace [yellow]{namespace}[/yellow]\n"
@@ -316,7 +316,7 @@ def analyze(
 
     # Run agent workflow
     try:
-        with console.status("[bold green]Running K8sGPT analysis..."):
+        with console.status("[bold green]AEGIS analyzing..."):
             # Run async workflow
             result = asyncio.run(
                 analyze_incident(
@@ -337,6 +337,15 @@ def analyze(
         if error_msg:
             _exit_on_error(error_msg)
 
+        # Check if no problems were detected (healthy resource)
+        if result.get("no_problems"):
+            console.print(
+                f"\n[bold green]✓ No problems detected[/bold green] for "
+                f"[cyan]{resource}[/cyan] in namespace [yellow]{namespace}[/yellow]\n"
+            )
+            console.print("The resource appears to be healthy according to K8sGPT analysis.\n")
+            return  # Exit successfully
+
         # Display analysis results - convert IncidentState to dict
         _display_analysis_results(console, dict(result))
 
@@ -356,14 +365,14 @@ def analyze(
             namespace=namespace,
         ).inc()
 
-        log.info(
-            "analysis_completed",
-            resource=resource,
-            namespace=namespace,
-            has_rca=rca_result is not None,
-            has_fix=fix_proposal is not None,
-            has_verification=verification_plan is not None,
-        )
+        # log.info(
+        #     "analysis_completed",
+        #     resource=resource,
+        #     namespace=namespace,
+        #     has_rca=rca_result is not None,
+        #     has_fix=fix_proposal is not None,
+        #     has_verification=verification_plan is not None,
+        # )
 
     except Exception as e:
         console.print(f"\n[bold red]Unexpected Error:[/bold red] {e}\n")
@@ -400,7 +409,7 @@ def incident_list(
         aegis incident list
         aegis incident list --namespace prod --severity high
     """
-    log.info("listing_incidents", namespace=namespace, severity=severity)
+    # log.info("listing_incidents", namespace=namespace, severity=severity)
 
     console.print("\n[bold cyan]Active Incidents[/bold cyan]\n")
 
@@ -429,7 +438,7 @@ def incident_show(
     Example:
         aegis incident show inc-2026-001
     """
-    log.info("showing_incident", incident_id=incident_id)
+    # log.info("showing_incident", incident_id=incident_id)
 
     console.print(f"\n[bold cyan]Incident:[/bold cyan] {incident_id}\n")
 

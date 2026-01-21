@@ -60,7 +60,7 @@ class FixProposal(BaseModel):
     fix_type: Literal["config_change", "restart", "scale", "rollback", "patch", "manual"]
     description: str  # Clear explanation of what the fix does
     commands: list[str]  # kubectl commands to apply the fix
-    manifests: dict[str, str]  # YAML manifests {"filename.yaml": "yaml content"}
+    manifests: dict[str, str]  # YAML manifests {{"filename.yaml": "yaml content"}}
     rollback_commands: list[str]  # Commands to undo the fix
     estimated_downtime: str  # "zero-downtime" or time estimate
     risks: list[str]  # Potential issues from applying fix
@@ -68,17 +68,17 @@ class FixProposal(BaseModel):
     confidence_score: float  # Between 0.0 and 1.0
 
 Example valid JSON:
-{
+{{
   "fix_type": "config_change",
   "description": "Increase memory limit to 512Mi",
   "commands": ["kubectl set resources deployment/nginx --limits=memory=512Mi"],
-  "manifests": {"nginx-patch.yaml": "apiVersion: apps/v1\nkind: Deployment\nmetadata:\n  name: nginx\nspec:\n  template:\n    spec:\n      containers:\n      - name: nginx\n        resources:\n          limits:\n            memory: 512Mi"},
+  "manifests": {{"nginx-patch.yaml": "apiVersion: apps/v1\nkind: Deployment\nmetadata:\n  name: nginx\nspec:\n  template:\n    spec:\n      containers:\n      - name: nginx\n        resources:\n          limits:\n            memory: 512Mi"}},
   "rollback_commands": ["kubectl set resources deployment/nginx --limits=memory=256Mi"],
   "estimated_downtime": "zero-downtime",
   "risks": ["Pods will be recreated"],
   "prerequisites": ["Backup current configuration"],
   "confidence_score": 0.9
-}
+}}
 
 Generate your fix following this EXACT structure:
 

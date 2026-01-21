@@ -35,12 +35,12 @@ class OllamaClient:
         self.default_model = settings.ollama.model
         self.max_retries = settings.ollama.max_retries
 
-        log.info(
-            "ollama_client_initialized",
-            base_url=settings.ollama.base_url,
-            default_model=self.default_model,
-            max_retries=self.max_retries,
-        )
+        # log.info(
+        #     "ollama_client_initialized",
+        #     base_url=settings.ollama.base_url,
+        #     default_model=self.default_model,
+        #     max_retries=self.max_retries,
+        # )
 
     def chat(
         self,
@@ -100,13 +100,13 @@ class OllamaClient:
             try:
                 start_time = time.time()
 
-                log.debug(
-                    "ollama_request_start",
-                    model=model,
-                    messages_count=len(messages),
-                    format_json=format_json,
-                    attempt=attempt + 1,
-                )
+                # log.debug(
+                #     "ollama_request_start",
+                #     model=model,
+                #     messages_count=len(messages),
+                #     format_json=format_json,
+                #     attempt=attempt + 1,
+                # )
 
                 response: ChatResponse = self.client.chat(
                     model=model,
@@ -121,13 +121,16 @@ class OllamaClient:
                 llm_requests_total.labels(model=model, status="success").inc()
                 llm_request_duration_seconds.labels(model=model).observe(duration)
 
-                log.info(
-                    "ollama_request_success",
-                    model=model,
-                    duration_seconds=round(duration, 2),
-                    response_length=len(response.message.content or ""),
-                    eval_count=response.get("eval_count", 0),
-                )
+                # log.info(
+                #     "ollama_request_success",
+                #     model=model,
+                #     duration_seconds=round(duration, 2),
+                #     response_length=len(response.message.content or ""),
+                #     eval_count=response.get("eval_count", 0),
+                # )
+
+                # Return successful response
+                return response
 
             except ResponseError as e:
                 last_error = e
@@ -234,12 +237,12 @@ class OllamaClient:
             raise ValueError(msg)
 
         # Log raw response for debugging (INFO level to always see it)
-        log.info(
-            "ollama_raw_response",
-            model=response.model,
-            content_preview=response.message.content[:500],
-            content_length=len(response.message.content),
-        )
+        # log.info(
+        #     "ollama_raw_response",
+        #     model=response.model,
+        #     content_preview=response.message.content[:500],
+        #     content_length=len(response.message.content),
+        # )
 
         try:
             validated = schema.model_validate_json(response.message.content)
@@ -253,11 +256,11 @@ class OllamaClient:
             if json_match:
                 try:
                     validated = schema.model_validate_json(json_match.group(1))
-                    log.info(
-                        "schema_validation_success_after_extraction",
-                        schema=schema.__name__,
-                        model=model or self.default_model,
-                    )
+                    # log.info(
+                    #     "schema_validation_success_after_extraction",
+                    #     schema=schema.__name__,
+                    #     model=model or self.default_model,
+                    # )
                 except ValueError as extraction_error:
                     log.warning(
                         "schema_extraction_failed",

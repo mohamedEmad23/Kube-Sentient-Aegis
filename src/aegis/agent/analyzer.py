@@ -28,17 +28,17 @@ class K8sGPTAnalyzer:
     def __init__(self) -> None:
         """Initialize K8sGPT analyzer and check availability."""
         self.cli_path = shutil.which("k8sgpt")
-        self.backend = settings.ollama.model  # Use Ollama as backend
+        self.backend = "localai"  # K8sGPT backend name (not the model name)
         self.is_available = self.cli_path is not None
 
-        if self.is_available:
-            log.info("k8sgpt_found", path=self.cli_path)
-        else:
-            log.warning(
-                "k8sgpt_not_found",
-                message="K8sGPT CLI not installed. Will use mock data for development.",
-                install_instructions="brew install k8sgpt OR visit https://github.com/k8sgpt-ai/k8sgpt",
-            )
+        # if self.is_available:
+        #     log.info("k8sgpt_found", path=self.cli_path)
+        # else:
+        #     log.warning(
+        #         "k8sgpt_not_found",
+        #         message="K8sGPT CLI not installed. Will use mock data for development.",
+        #         install_instructions="brew install k8sgpt OR visit https://github.com/k8sgpt-ai/k8sgpt",
+        #     )
 
     async def analyze(
         self,
@@ -77,13 +77,16 @@ class K8sGPTAnalyzer:
                 resource_name=resource_name,
                 namespace=namespace,
             )
-            return self._get_mock_analysis(resource_type, resource_name, namespace)
+            #return self._get_mock_analysis(resource_type, resource_name, namespace)
+            raise RuntimeError("K8sGPT not available; mock data usage is disabled.")
 
         # Build K8sGPT command
+        # K8sGPT filters are case-sensitive (e.g., "Pod" not "pod")
+        filter_name = resource_type.capitalize()
         cmd: list[str] = [
             self.cli_path or "",
             "analyze",
-            f"--filter={resource_type}",
+            f"--filter={filter_name}",
             f"--namespace={namespace}",
             "--output=json",
         ]
@@ -115,7 +118,8 @@ class K8sGPTAnalyzer:
                 log.exception("k8sgpt_timeout", timeout=settings.kubernetes.api_timeout)
                 process.kill()
                 await process.wait()
-                return self._get_mock_analysis(resource_type, resource_name, namespace)
+                # return self._get_mock_analysis(resource_type, resource_name, namespace)
+                raise RuntimeError("K8sGPT analysis timed out")
 
             if process.returncode != 0:
                 log.error(
@@ -124,14 +128,28 @@ class K8sGPTAnalyzer:
                     stderr=stderr.decode(),
                 )
                 # Fallback to mock on error
-                return self._get_mock_analysis(resource_type, resource_name, namespace)
+                # return self._get_mock_analysis(resource_type, resource_name, namespace)
+                raise RuntimeError("K8sGPT execution failed")
 
             # Parse JSON output
             raw_output = json.loads(stdout.decode())
 
             # Filter results for specific resource
+            # K8sGPT returns name as "namespace/resource" so we need to match both formats
+            results_list = raw_output.get("results") or []
+
+            # Debug: log what K8sGPT returned
+            # log.info(
+            #     "k8sgpt_raw_results",
+            #     total_results=len(results_list),
+            #     result_names=[r.get("name") for r in results_list],
+            #     looking_for=[resource_name, f"{namespace}/{resource_name}"],
+            # )
+
             filtered_results = [
-                r for r in raw_output.get("results", []) if r.get("name") == resource_name
+                r for r in results_list
+                if r.get("name") == resource_name
+                or r.get("name") == f"{namespace}/{resource_name}"
             ]
 
             filtered_output = {
@@ -150,19 +168,21 @@ class K8sGPTAnalyzer:
                 problems_found=str(analysis.problems),
             ).inc()
 
-            log.info(
-                "k8sgpt_analysis_completed",
-                resource=f"{resource_type}/{resource_name}",
-                problems=analysis.problems,
-            )
+            # log.info(
+            #     "k8sgpt_analysis_completed",
+            #     resource=f"{resource_type}/{resource_name}",
+            #     problems=analysis.problems,
+            # )
 
         except json.JSONDecodeError as e:
             log.exception("k8sgpt_json_parse_error", error=str(e))
-            return self._get_mock_analysis(resource_type, resource_name, namespace)
+            # return self._get_mock_analysis(resource_type, resource_name, namespace)
+            raise RuntimeError("K8sGPT JSON parse error")
 
         except OSError as e:
             log.exception("k8sgpt_unexpected_error", error=str(e))
-            return self._get_mock_analysis(resource_type, resource_name, namespace)
+            # return self._get_mock_analysis(resource_type, resource_name, namespace)
+            raise RuntimeError("K8sGPT unexpected error")
         else:
             return analysis
 

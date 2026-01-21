@@ -65,7 +65,7 @@ async def verifier_agent(
         resource_name=state["resource_name"],
         namespace=state["namespace"],
         root_cause=rca_result.root_cause,
-        fix_proposal=json.dumps(fix_proposal.model_dump(), indent=2),
+        fix_proposal=fix_proposal.model_dump_json(indent=2),
         fix_type=fix_proposal.fix_type.value,
         estimated_downtime=fix_proposal.estimated_downtime or "unknown",
         risks=", ".join(fix_proposal.risks) if fix_proposal.risks else "none",

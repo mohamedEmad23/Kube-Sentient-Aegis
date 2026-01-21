@@ -84,21 +84,21 @@ class VerificationPlan(BaseModel):
     approval_required: bool  # Require human approval
 
 Example valid JSON:
-{
+{{
   "verification_type": "shadow",
   "test_scenarios": ["Functional test", "Load test at 100 RPS", "Security scan"],
   "success_criteria": ["Response time < 100ms", "Error rate < 1%", "No critical vulnerabilities"],
   "duration": 300,
-  "load_test_config": {
+  "load_test_config": {{
     "users": 100,
     "spawn_rate": 10,
     "duration_seconds": 180,
     "target_url": "http://nginx.default.svc.cluster.local"
-  },
+  }},
   "security_checks": ["trivy"],
   "rollback_on_failure": true,
   "approval_required": false
-}
+}}
 
 Generate your verification plan following this EXACT structure:
 

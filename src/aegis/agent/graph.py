@@ -57,7 +57,7 @@ def create_incident_workflow(
         >>> print(result["fix_proposal"].description)
         >>> print(result["verification_plan"].verification_type)
     """
-    log.info("creating_incident_workflow", checkpointer_enabled=checkpointer is not None)
+    # log.info("creating_incident_workflow", checkpointer_enabled=checkpointer is not None)
 
     # Initialize StateGraph with IncidentState schema
     builder = StateGraph(IncidentState)
@@ -80,10 +80,10 @@ def create_incident_workflow(
     # Compile graph with optional checkpointing
     if checkpointer:
         graph = builder.compile(checkpointer=checkpointer)
-        log.info("workflow_compiled", checkpointing="enabled")
+        # log.info("workflow_compiled", checkpointing="enabled")
     else:
         graph = builder.compile()
-        log.info("workflow_compiled", checkpointing="disabled")
+        # log.info("workflow_compiled", checkpointing="disabled")
 
     return graph
 
@@ -129,11 +129,11 @@ async def analyze_incident(
         >>> print(result["rca_result"].root_cause)
         >>> print(result["fix_proposal"].commands)
     """
-    log.info(
-        "starting_incident_analysis",
-        resource=f"{resource_type}/{resource_name}",
-        namespace=namespace,
-    )
+    # log.info(
+    #     "starting_incident_analysis",
+    #     resource=f"{resource_type}/{resource_name}",
+    #     namespace=namespace,
+    # )
 
     # Create initial state
     state = create_initial_state(resource_type, resource_name, namespace)
@@ -147,6 +147,18 @@ async def analyze_incident(
     else:
         state["k8sgpt_raw"] = k8sgpt_analysis
         state["k8sgpt_analysis"] = K8sGPTAnalysis.model_validate(k8sgpt_analysis)
+
+    # Exit early if K8sGPT found no problems
+    k8sgpt_data = state["k8sgpt_analysis"]
+    if k8sgpt_data and k8sgpt_data.problems == 0:
+        log.info(
+            "no_problems_detected",
+            resource=f"{resource_type}/{resource_name}",
+            namespace=namespace,
+        )
+        # Not an error - resource is healthy
+        state["no_problems"] = True
+        return state
 
     # Select workflow
     if use_checkpoint:
