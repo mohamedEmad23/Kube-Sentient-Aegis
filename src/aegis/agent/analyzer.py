@@ -77,8 +77,7 @@ class K8sGPTAnalyzer:
                 resource_name=resource_name,
                 namespace=namespace,
             )
-            #return self._get_mock_analysis(resource_type, resource_name, namespace)
-            raise RuntimeError("K8sGPT not available; mock data usage is disabled.")
+            return self._get_mock_analysis(resource_type, resource_name, namespace)
 
         # Build K8sGPT command
         # K8sGPT filters are case-sensitive (e.g., "Pod" not "pod")

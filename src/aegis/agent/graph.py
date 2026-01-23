@@ -16,6 +16,7 @@ from langgraph.graph import START, StateGraph
 from aegis.agent.agents import rca_agent, solution_agent, verifier_agent
 from aegis.agent.analyzer import get_k8sgpt_analyzer
 from aegis.agent.state import IncidentState, K8sGPTAnalysis, create_initial_state
+from aegis.kubernetes.context import fetch_resource_context
 from aegis.observability._logging import get_logger
 
 
@@ -147,6 +148,12 @@ async def analyze_incident(
     else:
         state["k8sgpt_raw"] = k8sgpt_analysis
         state["k8sgpt_analysis"] = K8sGPTAnalysis.model_validate(k8sgpt_analysis)
+
+    # Enrich state with Kubernetes context for RCA prompts
+    k8s_context = await fetch_resource_context(resource_type, resource_name, namespace)
+    state["kubectl_logs"] = k8s_context.logs or "No logs available"
+    state["kubectl_describe"] = k8s_context.describe or "No describe output"
+    state["kubectl_events"] = k8s_context.events or "No recent events"
 
     # Exit early if K8sGPT found no problems
     k8sgpt_data = state["k8sgpt_analysis"]
