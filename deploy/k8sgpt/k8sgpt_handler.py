@@ -168,7 +168,7 @@ async def _create_aegis_incident(
         return incident_name
 
 
-@kopf.on.create(K8SGPT_API_GROUP, K8SGPT_API_VERSION, K8SGPT_RESULT_PLURAL)
+@kopf.on.create(K8SGPT_API_GROUP, K8SGPT_API_VERSION, K8SGPT_RESULT_PLURAL)  # type: ignore[misc]
 async def handle_k8sgpt_result_create(
     body: kopf.Body,
     _meta: kopf.Meta,
@@ -218,7 +218,7 @@ async def handle_k8sgpt_result_create(
     }
 
 
-@kopf.on.update(K8SGPT_API_GROUP, K8SGPT_API_VERSION, K8SGPT_RESULT_PLURAL)
+@kopf.on.update(K8SGPT_API_GROUP, K8SGPT_API_VERSION, K8SGPT_RESULT_PLURAL)  # type: ignore[misc]
 async def handle_k8sgpt_result_update(
     body: kopf.Body,
     _meta: kopf.Meta,
@@ -268,7 +268,7 @@ async def handle_k8sgpt_result_update(
     return {"processed": True, "skipped": True}
 
 
-@kopf.on.delete(K8SGPT_API_GROUP, K8SGPT_API_VERSION, K8SGPT_RESULT_PLURAL)
+@kopf.on.delete(K8SGPT_API_GROUP, K8SGPT_API_VERSION, K8SGPT_RESULT_PLURAL)  # type: ignore[misc]
 async def handle_k8sgpt_result_delete(
     _body: kopf.Body,
     _meta: kopf.Meta,
@@ -308,8 +308,8 @@ async def handle_k8sgpt_result_delete(
             logger.warning(f"Failed to update Incident: {e}")
 
 
-@kopf.on.startup()
-async def on_startup(_settings: kopf.OperatorSettings, logger: kopf.Logger, **_) -> None:
+@kopf.on.startup()  # type: ignore[misc]
+async def on_startup(_settings: kopf.OperatorSettings, logger: kopf.Logger, **_: Any) -> None:
     """Configure K8sGPT Result watching on startup."""
     logger.info("Initializing K8sGPT Result watcher...")
 

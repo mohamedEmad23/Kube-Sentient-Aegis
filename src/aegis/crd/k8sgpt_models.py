@@ -161,14 +161,17 @@ class K8sGPTResult(BaseModel):
         Returns:
             K8sGPTResult instance.
         """
+        metadata_dict = obj.get("metadata", {})
         metadata = K8sGPTResultMetadata(
-            name=obj.get("metadata", {}).get("name", ""),
-            namespace=obj.get("metadata", {}).get("namespace", "default"),
-            labels=obj.get("metadata", {}).get("labels", {}),
-            annotations=obj.get("metadata", {}).get("annotations", {}),
-            creation_timestamp=obj.get("metadata", {}).get("creationTimestamp"),
-            uid=obj.get("metadata", {}).get("uid"),
+            name=metadata_dict.get("name", ""),
+            namespace=metadata_dict.get("namespace", "default"),
+            labels=metadata_dict.get("labels", {}),
+            annotations=metadata_dict.get("annotations", {}),
+            uid=metadata_dict.get("uid"),
         )
+        # Set creation_timestamp separately if present
+        if "creationTimestamp" in metadata_dict:
+            metadata.creation_timestamp = metadata_dict["creationTimestamp"]
 
         spec_data = obj.get("spec", {})
 
@@ -194,13 +197,18 @@ class K8sGPTResult(BaseModel):
             name=spec_data.get("name", ""),
             error=parsed_errors,
             details=spec_data.get("details", ""),
-            parent_object=spec_data.get("parentObject", ""),
             sensitive=spec_data.get("sensitive", []),
         )
+        # Set parent_object separately if present
+        if "parentObject" in spec_data:
+            spec.parent_object = spec_data["parentObject"]
 
-        return cls(
-            api_version=obj.get("apiVersion", f"{K8SGPT_API_GROUP}/{K8SGPT_API_VERSION}"),
+        result = cls(
             kind=obj.get("kind", K8SGPT_RESULT_KIND),
             metadata=metadata,
             spec=spec,
         )
+        # Set api_version separately if present
+        if "apiVersion" in obj:
+            result.api_version = obj["apiVersion"]
+        return result

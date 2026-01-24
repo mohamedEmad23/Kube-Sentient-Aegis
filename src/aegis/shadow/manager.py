@@ -16,7 +16,7 @@ import asyncio
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from enum import Enum
-from typing import Any
+from typing import Any, cast
 
 from kubernetes import client
 from kubernetes.client.rest import ApiException
@@ -311,9 +311,14 @@ class ShadowManager:
         """Clone a resource to the shadow namespace."""
         if source_kind.lower() == "deployment":
             # Get source deployment
-            deployment = self._apps_api.read_namespaced_deployment(source_name, source_namespace)
+            deployment = cast(
+                client.V1Deployment,
+                self._apps_api.read_namespaced_deployment(source_name, source_namespace),
+            )
 
             # Prepare for cloning
+            if deployment.metadata is None:
+                deployment.metadata = client.V1ObjectMeta()
             deployment.metadata.namespace = target_namespace
             deployment.metadata.resource_version = None
             deployment.metadata.uid = None
@@ -329,7 +334,10 @@ class ShadowManager:
 
         elif source_kind.lower() == "pod":
             # For standalone pods, create a deployment wrapper
-            pod = self._core_api.read_namespaced_pod(source_name, source_namespace)
+            pod = cast(
+                client.V1Pod,
+                self._core_api.read_namespaced_pod(source_name, source_namespace),
+            )
 
             # Create deployment from pod spec
             deployment = client.V1Deployment(
@@ -410,13 +418,16 @@ class ShadowManager:
     async def _check_health(self, env: ShadowEnvironment) -> float:
         """Single health check for shadow environment."""
         try:
-            pods = self._core_api.list_namespaced_pod(env.namespace)
+            pods = cast(
+                client.V1PodList,
+                self._core_api.list_namespaced_pod(env.namespace),
+            )
             if not pods.items:
                 return 0.0
 
             healthy = 0
             for pod in pods.items:
-                if pod.status.phase == "Running":
+                if pod.status and pod.status.phase == "Running":
                     # Check container statuses
                     ready = True
                     for cs in pod.status.container_statuses or []:
