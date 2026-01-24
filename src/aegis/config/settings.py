@@ -72,7 +72,7 @@ class OllamaSettings(BaseSettings):
     )
 
     timeout: int = Field(
-        default=120,
+        default=300,
         description="Request timeout in seconds",
         ge=1,
     )
@@ -125,9 +125,9 @@ class KubernetesSettings(BaseSettings):
         default=None,
         description="Kubernetes context name",
     )
-    namespace: str = Field(
-        default="aegis-system",
-        description="Default namespace for AEGIS resources",
+    namespace: str | None = Field(
+        default=None,
+        description="Default namespace for AEGIS resources (None = all namespaces)",
     )
     operator_name: str = Field(
         default="aegis-operator",
@@ -330,7 +330,6 @@ class AgentSettings(BaseSettings):
 
     # Model assignments for each agent
     rca_model: str = Field(
-        # default="llama3.2:3b-instruct-q5_k_m",
         default="phi3:mini",
         description="Model for Root Cause Analysis agent",
     )

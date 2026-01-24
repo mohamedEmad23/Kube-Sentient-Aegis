@@ -31,15 +31,6 @@ class K8sGPTAnalyzer:
         self.backend = "localai"  # K8sGPT backend name (not the model name)
         self.is_available = self.cli_path is not None
 
-        # if self.is_available:
-        #     log.info("k8sgpt_found", path=self.cli_path)
-        # else:
-        #     log.warning(
-        #         "k8sgpt_not_found",
-        #         message="K8sGPT CLI not installed. Will use mock data for development.",
-        #         install_instructions="brew install k8sgpt OR visit https://github.com/k8sgpt-ai/k8sgpt",
-        #     )
-
     async def analyze(
         self,
         resource_type: str,
@@ -77,8 +68,7 @@ class K8sGPTAnalyzer:
                 resource_name=resource_name,
                 namespace=namespace,
             )
-            #return self._get_mock_analysis(resource_type, resource_name, namespace)
-            raise RuntimeError("K8sGPT not available; mock data usage is disabled.")
+            return self._get_mock_analysis(resource_type, resource_name, namespace)
 
         # Build K8sGPT command
         # K8sGPT filters are case-sensitive (e.g., "Pod" not "pod")
@@ -118,8 +108,7 @@ class K8sGPTAnalyzer:
                 log.exception("k8sgpt_timeout", timeout=settings.kubernetes.api_timeout)
                 process.kill()
                 await process.wait()
-                # return self._get_mock_analysis(resource_type, resource_name, namespace)
-                raise RuntimeError("K8sGPT analysis timed out")
+                return self._get_mock_analysis(resource_type, resource_name, namespace)
 
             if process.returncode != 0:
                 log.error(
@@ -128,8 +117,7 @@ class K8sGPTAnalyzer:
                     stderr=stderr.decode(),
                 )
                 # Fallback to mock on error
-                # return self._get_mock_analysis(resource_type, resource_name, namespace)
-                raise RuntimeError("K8sGPT execution failed")
+                return self._get_mock_analysis(resource_type, resource_name, namespace)
 
             # Parse JSON output
             raw_output = json.loads(stdout.decode())
@@ -138,18 +126,10 @@ class K8sGPTAnalyzer:
             # K8sGPT returns name as "namespace/resource" so we need to match both formats
             results_list = raw_output.get("results") or []
 
-            # Debug: log what K8sGPT returned
-            # log.info(
-            #     "k8sgpt_raw_results",
-            #     total_results=len(results_list),
-            #     result_names=[r.get("name") for r in results_list],
-            #     looking_for=[resource_name, f"{namespace}/{resource_name}"],
-            # )
-
             filtered_results = [
-                r for r in results_list
-                if r.get("name") == resource_name
-                or r.get("name") == f"{namespace}/{resource_name}"
+                r
+                for r in results_list
+                if r.get("name") == resource_name or r.get("name") == f"{namespace}/{resource_name}"
             ]
 
             filtered_output = {
@@ -168,21 +148,13 @@ class K8sGPTAnalyzer:
                 problems_found=str(analysis.problems),
             ).inc()
 
-            # log.info(
-            #     "k8sgpt_analysis_completed",
-            #     resource=f"{resource_type}/{resource_name}",
-            #     problems=analysis.problems,
-            # )
-
         except json.JSONDecodeError as e:
             log.exception("k8sgpt_json_parse_error", error=str(e))
-            # return self._get_mock_analysis(resource_type, resource_name, namespace)
-            raise RuntimeError("K8sGPT JSON parse error")
+            return self._get_mock_analysis(resource_type, resource_name, namespace)
 
         except OSError as e:
             log.exception("k8sgpt_unexpected_error", error=str(e))
-            # return self._get_mock_analysis(resource_type, resource_name, namespace)
-            raise RuntimeError("K8sGPT unexpected error")
+            return self._get_mock_analysis(resource_type, resource_name, namespace)
         else:
             return analysis
 
@@ -219,10 +191,11 @@ class K8sGPTAnalyzer:
                     "error": [
                         {
                             "text": (
-                                f"Pod {resource_name} is in CrashLoopBackOff state. "
-                                "Container 'app' is failing with exit code 1. "
-                                "Last termination reason: Error. "
-                                "Check logs for application-specific errors."
+                                f"CRITICAL: Pod {resource_name} is in CrashLoopBackOff state with 5 restart attempts. "
+                                "Container 'app' is failing with exit code 1 due to missing DATABASE_URL environment variable. "
+                                "Application logs show: 'Error: DATABASE_URL environment variable is required'. "
+                                "Last termination reason: Error. Restart policy: Always. Container must be reconfigured "
+                                "with the correct environment variable to resolve this issue."
                             ),
                             "kubernetes_doc": "https://kubernetes.io/docs/concepts/workloads/pods/pod-lifecycle/#container-states",
                         }
@@ -230,6 +203,54 @@ class K8sGPTAnalyzer:
                     "parent_object": None,
                 }
             ]
+            # Store mock kubectl context for this resource type
+            mock_data["_mock_kubectl"] = {
+                "logs": (
+                    "2026-01-24T02:15:00Z Starting application...\n"
+                    "2026-01-24T02:15:01Z Loading configuration...\n"
+                    "2026-01-24T02:15:01Z ERROR: DATABASE_URL environment variable is required\n"
+                    "2026-01-24T02:15:01Z Application failed to start\n"
+                    "2026-01-24T02:15:01Z Exit code: 1"
+                ),
+                "describe": (
+                    f"Name:         {resource_name}\n"
+                    f"Namespace:    {namespace}\n"
+                    f"Status:       Running\n"
+                    f"IP:           10.244.0.5\n"
+                    f"Containers:\n"
+                    f"  app:\n"
+                    f"    Image:          nginx:latest\n"
+                    f"    State:          Waiting\n"
+                    f"      Reason:       CrashLoopBackOff\n"
+                    f"    Last State:     Terminated\n"
+                    f"      Reason:       Error\n"
+                    f"      Exit Code:    1\n"
+                    f"    Ready:          False\n"
+                    f"    Restart Count:  5\n"
+                    f"    Environment:\n"
+                    f"      APP_ENV:      production\n"
+                    f"      # DATABASE_URL is MISSING\n"
+                    f"Conditions:\n"
+                    f"  Type              Status\n"
+                    f"  Initialized       True\n"
+                    f"  Ready             False\n"
+                    f"  ContainersReady   False\n"
+                    f"  PodScheduled      True\n"
+                    f"Events:\n"
+                    f"  Type     Reason     Message\n"
+                    f"  Normal   Scheduled  Successfully assigned {namespace}/{resource_name} to node-1\n"
+                    f"  Normal   Pulled     Container image pulled successfully\n"
+                    f"  Warning  BackOff    Back-off restarting failed container"
+                ),
+                "events": (
+                    f"LAST SEEN   TYPE      REASON     OBJECT                MESSAGE\n"
+                    f"2m          Normal    Scheduled  pod/{resource_name}   Successfully assigned to node-1\n"
+                    f"2m          Normal    Pulling    pod/{resource_name}   Pulling image nginx:latest\n"
+                    f"2m          Normal    Pulled     pod/{resource_name}   Successfully pulled image\n"
+                    f"1m          Warning   BackOff    pod/{resource_name}   Back-off restarting failed container\n"
+                    f"30s         Warning   BackOff    pod/{resource_name}   Back-off 40s restarting failed container"
+                ),
+            }
 
         elif resource_type.lower() == "deployment":
             mock_data["results"] = [
@@ -240,10 +261,11 @@ class K8sGPTAnalyzer:
                     "error": [
                         {
                             "text": (
-                                f"Deployment {resource_name} has 0/3 replicas available. "
-                                "ImagePullBackOff error detected. "
-                                "Container image 'nginx:invalid-tag' not found. "
-                                "Verify image name and tag."
+                                f"CRITICAL: Deployment {resource_name} has 0/3 replicas available. "
+                                "ImagePullBackOff error detected for all pods. "
+                                "Container image 'nginx:invalid-tag-v999' not found in registry. "
+                                "Image pull failed with: 'manifest unknown: manifest unknown'. "
+                                "Verify the image name and tag exist in the container registry."
                             ),
                             "kubernetes_doc": "https://kubernetes.io/docs/concepts/workloads/controllers/deployment/",
                         }
@@ -251,6 +273,31 @@ class K8sGPTAnalyzer:
                     "parent_object": None,
                 }
             ]
+            mock_data["_mock_kubectl"] = {
+                "logs": "Error from server: container not ready",
+                "describe": (
+                    f"Name:               {resource_name}\n"
+                    f"Namespace:          {namespace}\n"
+                    f"Replicas:           3 desired | 3 updated | 3 total | 0 available\n"
+                    f"Conditions:\n"
+                    f"  Type           Status  Reason\n"
+                    f"  Available      False   MinimumReplicasUnavailable\n"
+                    f"  Progressing    False   ProgressDeadlineExceeded\n"
+                    f"Pod Template:\n"
+                    f"  Containers:\n"
+                    f"   app:\n"
+                    f"    Image:        nginx:invalid-tag-v999\n"
+                    f"Events:\n"
+                    f"  Type     Reason             Message\n"
+                    f"  Warning  FailedCreate       Error creating pod: ImagePullBackOff"
+                ),
+                "events": (
+                    f"LAST SEEN   TYPE      REASON          OBJECT                    MESSAGE\n"
+                    f"5m          Normal    ScalingReplicaSet   deployment/{resource_name}   Scaled up replica set\n"
+                    f"5m          Warning   FailedCreate        replicaset/{resource_name}   ImagePullBackOff\n"
+                    f"3m          Warning   Failed              pod/{resource_name}-xxx      Failed to pull image"
+                ),
+            }
 
         elif resource_type.lower() == "service":
             mock_data["results"] = [
@@ -261,9 +308,10 @@ class K8sGPTAnalyzer:
                     "error": [
                         {
                             "text": (
-                                f"Service {resource_name} has no endpoints. "
-                                "No pods match the selector labels. "
-                                "Check that pod labels match service selector."
+                                f"WARNING: Service {resource_name} has no endpoints. "
+                                "Service selector 'app=myapp' does not match any pod labels. "
+                                "Pods in namespace have labels 'app=my-app' (hyphenated). "
+                                "Fix the service selector to match pod labels."
                             ),
                             "kubernetes_doc": "https://kubernetes.io/docs/concepts/services-networking/service/",
                         }
@@ -271,6 +319,25 @@ class K8sGPTAnalyzer:
                     "parent_object": None,
                 }
             ]
+            mock_data["_mock_kubectl"] = {
+                "logs": "N/A - Service resource",
+                "describe": (
+                    f"Name:              {resource_name}\n"
+                    f"Namespace:         {namespace}\n"
+                    f"Type:              ClusterIP\n"
+                    f"IP:                10.96.123.45\n"
+                    f"Port:              http  80/TCP\n"
+                    f"TargetPort:        8080/TCP\n"
+                    f"Endpoints:         <none>\n"
+                    f"Selector:          app=myapp\n"
+                    f"Session Affinity:  None\n"
+                    f"Events:            <none>"
+                ),
+                "events": (
+                    f"LAST SEEN   TYPE      REASON     OBJECT                 MESSAGE\n"
+                    f"10m         Normal    Created    service/{resource_name}   Service created"
+                ),
+            }
 
         else:
             # Generic mock for other resource types
@@ -288,6 +355,11 @@ class K8sGPTAnalyzer:
                     "parent_object": None,
                 }
             ]
+            mock_data["_mock_kubectl"] = {
+                "logs": "Mock logs for development",
+                "describe": f"Mock describe for {resource_type}/{resource_name}",
+                "events": "No events",
+            }
 
         return K8sGPTAnalysis.model_validate(mock_data)
 

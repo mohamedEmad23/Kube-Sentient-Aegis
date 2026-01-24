@@ -4,7 +4,6 @@ Uses tinyllama:latest for generating practical fixes with kubectl commands and Y
 Returns Command object for routing to verifier or direct application.
 """
 
-import json
 from typing import Literal
 
 from langchain_core.messages import AIMessage, HumanMessage
@@ -92,13 +91,6 @@ async def solution_agent(
             status="completed",
         ).inc()
 
-        # log.info(
-        #     "solution_agent_completed",
-        #     fix_type=fix_proposal.fix_type.value,
-        #     confidence=fix_proposal.confidence_score,
-        #     commands_count=len(fix_proposal.commands),
-        # )
-
         # Update messages
         ai_message = AIMessage(
             content=f"Fix proposed: {fix_proposal.fix_type.value} - {fix_proposal.description}"
@@ -112,12 +104,6 @@ async def solution_agent(
         )
 
         if needs_verification:
-            # log.info(
-            #     "solution_requires_verification",
-            #     severity=rca_result.severity.value,
-            #     namespace=state["namespace"],
-            #     risks=len(fix_proposal.risks),
-            # )
             return Command(
                 goto="verifier_agent",
                 update={

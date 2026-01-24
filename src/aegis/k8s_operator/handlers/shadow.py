@@ -396,7 +396,7 @@ async def _run_shadow_verification(
     Returns:
         bool: True if shadow test passed, False otherwise
     """
-    _ = (namespace, proposal)  # Unused but kept for future implementation
+    from aegis.shadow.manager import get_shadow_manager
 
     log.info(
         "🔬 Creating shadow environment",
@@ -404,31 +404,45 @@ async def _run_shadow_verification(
         namespace=namespace,
     )
 
-    # Simulate shadow environment creation (5 seconds)
-    for _i in range(SHADOW_ENV_CREATION_SECONDS):
+    shadow_manager = get_shadow_manager()
+
+    try:
+        # Create shadow environment
+        shadow_env = await shadow_manager.create_shadow(
+            source_namespace=namespace,
+            source_resource=deployment_name,
+            source_resource_kind="Deployment",
+        )
+
         if stopped:
             log.warning("shadow_test_cancelled", deployment=deployment_name)
-            return False
-        await stopped.wait(timeout=1.0)
-
-    log.info("✅ Shadow environment created")
-
-    # Monitor shadow health (configurable duration)
-    monitor_duration = settings.shadow.verification_timeout
-    log.info("👀 Monitoring shadow environment", duration_seconds=int(monitor_duration))
-
-    # Simulate monitoring (check health every 10 seconds)
-    elapsed = 0
-    while elapsed < monitor_duration:
-        if stopped:
-            log.warning("shadow_monitoring_cancelled")
+            await shadow_manager.cleanup(shadow_env.id)
             return False
 
-        await stopped.wait(timeout=SHADOW_HEALTH_CHECK_INTERVAL)
-        elapsed += SHADOW_HEALTH_CHECK_INTERVAL
+        log.info("✅ Shadow environment created", shadow_id=shadow_env.id)
 
-    log.info("✅ Shadow monitoring complete - test passed")
-    return True
+        # Run verification with proposed changes
+        changes = proposal.get("changes", {})
+        passed = await shadow_manager.run_verification(
+            shadow_id=shadow_env.id,
+            changes=changes,
+            duration=settings.shadow.verification_timeout,
+        )
+
+        log.info(
+            "Shadow verification result",
+            passed=passed,
+            health_score=shadow_env.health_score,
+        )
+
+        # Cleanup
+        await shadow_manager.cleanup(shadow_env.id)
+
+    except Exception:
+        log.exception("shadow_verification_error")
+        return False
+    else:
+        return passed
 
 
 def _predict_load(_deployment_name: str, _namespace: str) -> float:

@@ -85,7 +85,9 @@ class K8sGPTResult(BaseModel):
     name: str = Field(description="Resource name")
     namespace: str | None = Field(default=None, description="Resource namespace")
     error: list[K8sGPTError] = Field(description="List of errors detected")
-    parent_object: str | None = Field(default=None, description="Parent resource if applicable", alias="parentObject")
+    parent_object: str | None = Field(
+        default=None, description="Parent resource if applicable", alias="parentObject"
+    )
 
 
 class K8sGPTAnalysis(BaseModel):

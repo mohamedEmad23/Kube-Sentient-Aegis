@@ -17,9 +17,12 @@ Commands:
 import asyncio
 import sys
 from collections.abc import Callable
-from typing import Any, NoReturn, ParamSpec, TypeVar
+from typing import Any, ParamSpec, TypeVar
 
+import kopf
 import typer
+from kubernetes import client
+from kubernetes import config as k8s_config
 from prometheus_client import start_http_server
 from rich import print as rprint
 from rich.console import Console
@@ -31,6 +34,24 @@ from aegis.agent.llm.ollama import get_ollama_client
 from aegis.config.settings import settings
 from aegis.observability._logging import get_logger
 from aegis.observability._metrics import active_incidents, incidents_detected_total
+
+
+# HTTP Status Codes
+HTTP_OK = 200
+HTTP_NOT_FOUND = 404
+
+
+# ============================================================================
+# Helper Functions
+# ============================================================================
+
+
+def _handle_analysis_error(console: Console, error_msg: str) -> None:
+    """Handle analysis error and exit."""
+    console.print(f"\n[bold red]Analysis Error:[/bold red] {error_msg}\n")
+    log.error("analysis_failed", error=error_msg)
+    msg = "Analysis failed without RCA result"
+    raise typer.Exit(code=1) from RuntimeError(msg)
 
 
 # ============================================================================
@@ -249,7 +270,7 @@ def analyze(
         "-n",
         help="Kubernetes namespace",
     ),
-    auto_fix: bool = typer.Option(
+    _auto_fix: bool = typer.Option(
         False,
         "--auto-fix",
         help="Automatically apply fixes after verification",
@@ -260,6 +281,11 @@ def analyze(
         "-e",
         help="Export analysis report to markdown file",
     ),
+    mock: bool = typer.Option(
+        False,
+        "--mock",
+        help="Use mock K8sGPT data for development without cluster",
+    ),
 ) -> None:
     """Analyze Kubernetes resources for issues.
 
@@ -267,14 +293,8 @@ def analyze(
         aegis analyze pod/nginx-crashloop
         aegis analyze deployment/api --namespace prod
         aegis analyze pod/nginx --auto-fix --export report.md
+        aegis analyze pod/demo --mock  # Development mode without cluster
     """
-    # log.info(
-    #     "analysis_started",
-    #     resource=resource,
-    #     namespace=namespace,
-    #     auto_fix=auto_fix,
-    # )
-
     console.print(
         f"\n[bold cyan]Analyzing:[/bold cyan] {resource} in namespace [yellow]{namespace}[/yellow]\n"
     )
@@ -323,19 +343,9 @@ def analyze(
                     resource_type=resource_type,
                     resource_name=resource_name,
                     namespace=namespace,
+                    use_mock=mock,
                 )
             )
-
-        # Check for errors
-        def _exit_on_error(error_msg: str) -> NoReturn:
-            """Exit with error message."""
-            console.print(f"\n[bold red]Analysis Error:[/bold red] {error_msg}\n")
-            log.exception("analysis_failed")
-            raise typer.Exit(code=1)  # noqa: TRY301
-
-        error_msg = result.get("error")
-        if error_msg:
-            _exit_on_error(error_msg)
 
         # Check if no problems were detected (healthy resource)
         if result.get("no_problems"):
@@ -346,13 +356,29 @@ def analyze(
             console.print("The resource appears to be healthy according to K8sGPT analysis.\n")
             return  # Exit successfully
 
-        # Display analysis results - convert IncidentState to dict
+        # Extract results
+        rca_result = result.get("rca_result")
+        error_msg = result.get("error")
+
+        # Check for fatal errors (no RCA at all)
+        if not rca_result and error_msg:
+            _handle_analysis_error(console, error_msg)
+
+        # Display any partial results we have
         _display_analysis_results(console, dict(result))
 
-        # Extract results for metrics
-        rca_result = result.get("rca_result")
-        fix_proposal = result.get("fix_proposal")
-        verification_plan = result.get("verification_plan")
+        # Show low-confidence warning if workflow stopped early
+        if error_msg and rca_result:
+            console.print(
+                Panel(
+                    f"[yellow]{error_msg}[/yellow]\n\n"
+                    "The analysis confidence was below threshold. "
+                    "Results shown above are partial and may require manual verification.",
+                    title="[bold yellow]⚠️ Low Confidence Warning[/bold yellow]",
+                    border_style="yellow",
+                )
+            )
+            console.print()
 
         # Update metrics
         incidents_detected_total.labels(
@@ -364,15 +390,6 @@ def analyze(
             severity=rca_result.severity.value if rca_result else "unknown",
             namespace=namespace,
         ).inc()
-
-        # log.info(
-        #     "analysis_completed",
-        #     resource=resource,
-        #     namespace=namespace,
-        #     has_rca=rca_result is not None,
-        #     has_fix=fix_proposal is not None,
-        #     has_verification=verification_plan is not None,
-        # )
 
     except Exception as e:
         console.print(f"\n[bold red]Unexpected Error:[/bold red] {e}\n")
@@ -390,13 +407,13 @@ app.add_typer(incident_app, name="incident")
 
 @typed_command(incident_app, name="list")
 def incident_list(
-    namespace: str | None = typer.Option(
+    _namespace: str | None = typer.Option(
         None,
         "--namespace",
         "-n",
         help="Filter by namespace",
     ),
-    severity: str | None = typer.Option(
+    _severity: str | None = typer.Option(
         None,
         "--severity",
         "-s",
@@ -409,16 +426,11 @@ def incident_list(
         aegis incident list
         aegis incident list --namespace prod --severity high
     """
-    # log.info("listing_incidents", namespace=namespace, severity=severity)
-
-    console.print("\n[bold cyan]Active Incidents[/bold cyan]\n")
-
-    # Create table
-    table = Table(show_header=True, header_style="bold magenta")
-    table.add_column("ID", style="cyan")
-    table.add_column("Severity", style="yellow")
+    table = Table(title="Active Incidents")
+    table.add_column("Incident ID", style="cyan")
+    table.add_column("Severity", style="red")
     table.add_column("Resource", style="green")
-    table.add_column("Namespace", style="blue")
+    table.add_column("Namespace", style="yellow")
     table.add_column("Status", style="white")
 
     # Placeholder data for MVP
@@ -438,10 +450,6 @@ def incident_show(
     Example:
         aegis incident show inc-2026-001
     """
-    # log.info("showing_incident", incident_id=incident_id)
-
-    console.print(f"\n[bold cyan]Incident:[/bold cyan] {incident_id}\n")
-
     # Placeholder for incident details
     panel = Panel(
         "[bold]Status:[/bold] Analyzing\n"
@@ -596,6 +604,145 @@ def config(
 """
 
     console.print(Panel(config_text, border_style="blue"))
+    console.print()
+
+
+# ============================================================================
+# Operator Command
+# ============================================================================
+
+
+operator_app = typer.Typer(
+    name="operator",
+    help="Kubernetes operator management commands.",
+    no_args_is_help=True,
+)
+app.add_typer(operator_app, name="operator")
+
+
+@typed_command(operator_app, name="run")
+def operator_run(
+    namespace: str | None = typer.Option(
+        None,
+        "--namespace",
+        "-n",
+        help="Namespace to watch (None = all namespaces)",
+    ),
+    verbose: bool = typer.Option(
+        False,
+        "--verbose",
+        "-v",
+        help="Enable verbose logging",
+    ),
+) -> None:
+    """Run the AEGIS Kubernetes operator.
+
+    Starts the Kopf-based operator that watches for K8sGPT Results
+    and triggers automated remediation workflows.
+
+    Example:
+        aegis operator run
+        aegis operator run --namespace default
+        aegis operator run -v
+    """
+
+    from aegis.k8s_operator import handlers  # noqa: F401
+
+    log.info("operator_starting", namespace=namespace or "all", verbose=verbose)
+    console.print("\n[bold cyan]AEGIS Kubernetes Operator[/bold cyan]")
+    console.print("━" * 40)
+    console.print(f"Watching: [yellow]{namespace or 'all namespaces'}[/yellow]")
+    console.print(f"Model: [green]{settings.ollama.model}[/green]")
+    console.print(f"Base URL: [blue]{settings.ollama.base_url}[/blue]")
+    console.print("━" * 40)
+    console.print("[dim]Press Ctrl+C to stop[/dim]\n")
+
+    # Configure logging based on verbose flag
+    if verbose:
+        import logging
+
+        logging.getLogger("kopf").setLevel(logging.DEBUG)
+
+    try:
+        run_kwargs: dict[str, Any] = {"standalone": True}
+        if namespace:
+            run_kwargs["namespaces"] = [namespace]
+        else:
+            run_kwargs["clusterwide"] = True
+        kopf.run(**run_kwargs)
+    except KeyboardInterrupt:
+        console.print("\n[yellow]Operator stopped by user[/yellow]")
+        log.info("operator_stopped")
+
+
+@typed_command(operator_app, name="status")
+def operator_status() -> None:
+    """Check operator and cluster status.
+
+    Shows the current state of the AEGIS operator components
+    and K8sGPT integration.
+
+    Example:
+        aegis operator status
+    """
+
+    log.info("checking_operator_status")
+    console.print("\n[bold cyan]AEGIS Operator Status[/bold cyan]\n")
+
+    try:
+        try:
+            k8s_config.load_incluster_config()
+        except k8s_config.ConfigException:
+            k8s_config.load_kube_config()
+
+        v1 = client.CoreV1Api()
+        custom = client.CustomObjectsApi()
+
+        # Check K8sGPT Results
+        try:
+            results = custom.list_cluster_custom_object(
+                group="core.k8sgpt.ai",
+                version="v1alpha1",
+                plural="results",
+            )
+            result_count = len(results.get("items", []))
+            console.print(f"[green]✓[/green] K8sGPT Results: [cyan]{result_count}[/cyan] found")
+        except client.ApiException as e:
+            if e.status == HTTP_NOT_FOUND:
+                console.print("[yellow]○[/yellow] K8sGPT Results: CRD not installed")
+            else:
+                console.print(f"[red]✗[/red] K8sGPT Results: Error - {e.reason}")
+
+        # Check Ollama connectivity
+        try:
+            import httpx
+
+            resp = httpx.get(f"{settings.ollama.base_url}/api/tags", timeout=5)
+            if resp.status_code == HTTP_OK:
+                models = resp.json().get("models", [])
+                model_names = [m.get("name", "unknown") for m in models[:3]]
+                console.print(f"[green]✓[/green] Ollama: Connected ({len(models)} models)")
+                for name in model_names:
+                    console.print(f"    [dim]• {name}[/dim]")
+            else:
+                console.print(f"[red]✗[/red] Ollama: HTTP {resp.status_code}")
+        except (ConnectionError, TimeoutError) as e:
+            console.print(f"[red]✗[/red] Ollama: {e}")
+
+        # Check namespaces
+        namespaces = v1.list_namespace()
+        ns_names = [
+            ns.metadata.name
+            for ns in namespaces.items
+            if ns.metadata.name.startswith(("default", "aegis", "k8sgpt"))
+        ]
+        console.print("[green]✓[/green] Cluster: Connected")
+        for ns in ns_names:
+            console.print(f"    [dim]• {ns}[/dim]")
+
+    except client.ApiException as e:
+        console.print(f"[red]✗[/red] Cluster: {e}")
+
     console.print()
 
 

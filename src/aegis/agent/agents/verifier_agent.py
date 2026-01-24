@@ -4,7 +4,6 @@ Uses phi3:mini for creating comprehensive verification plans with shadow testing
 Returns Command object to end workflow with verification plan.
 """
 
-import json
 from typing import Literal
 
 from langchain_core.messages import AIMessage, HumanMessage

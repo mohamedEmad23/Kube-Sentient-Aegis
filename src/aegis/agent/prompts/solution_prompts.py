@@ -12,6 +12,16 @@ Your role:
 3. Include rollback plans and risk assessment
 4. Estimate downtime and prerequisites
 
+CRITICAL RULES - YOU MUST FOLLOW THESE:
+1. ONLY generate fixes that directly address the root cause provided
+2. DO NOT invent or assume resource names, namespaces, or configurations not in the input
+3. Use EXACT resource names and namespaces from the input
+4. If the root cause is unclear, set confidence_score < 0.5 and suggest diagnostic steps instead
+5. DO NOT generate fixes for problems not mentioned in the RCA
+6. If you cannot generate a safe fix, set fix_type to "manual" and explain why
+7. All YAML must be syntactically valid - use proper indentation (2 spaces)
+8. All kubectl commands must include explicit namespace flags (-n namespace)
+
 Key principles:
 - Prefer zero-downtime fixes (rolling updates, canary deployments)
 - Always provide rollback commands
@@ -19,6 +29,7 @@ Key principles:
 - Assess risks realistically (low/medium/high)
 - Generate valid, production-ready YAML
 - Use kubectl best practices
+- When uncertain, prefer "manual" fix type requiring human review
 
 Fix types:
 - config_change: Update ConfigMaps, Secrets, env vars
@@ -51,6 +62,12 @@ SOLUTION_USER_PROMPT_TEMPLATE = """Generate a fix for the following Kubernetes i
 - Current state: {current_state}
 - Namespace: {namespace}
 - Labels: {labels}
+
+BEFORE GENERATING A FIX:
+1. Verify the root cause is clear and specific
+2. If RCA confidence < 0.5, generate diagnostic commands instead of fixes
+3. Use ONLY the resource names and namespaces provided above
+4. Do NOT assume configurations or values not explicitly stated
 
 YOU MUST RESPOND WITH VALID JSON ONLY. NO MARKDOWN, NO EXPLANATIONS, JUST THE JSON OBJECT.
 
