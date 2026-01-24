@@ -222,8 +222,8 @@ models/
 .ollama/
 
 # MCP servers (third-party git repos)
-# .mcp/
-# tools/
+.mcp/
+tools/
 
 # =============================================================================
 # Project Specific
