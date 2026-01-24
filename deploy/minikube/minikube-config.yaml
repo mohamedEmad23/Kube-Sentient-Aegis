@@ -1,0 +1,66 @@
+# Minikube Configuration for AEGIS Development
+#
+# This file documents the minikube setup for the AEGIS operator
+# with K8sGPT integration.
+#
+# Start minikube with:
+#   minikube start --profile aegis \
+#     --cpus=4 \
+#     --memory=8192 \
+#     --driver=docker \
+#     --kubernetes-version=v1.29.0 \
+#     --addons=metrics-server,ingress
+#
+# Or use the setup script: ./scripts/setup-minikube.sh
+
+# Minikube profile configuration (reference)
+profile: aegis
+
+# Resource allocation
+resources:
+  cpus: 4
+  memory: 8192  # MB
+
+# Kubernetes version
+kubernetes-version: v1.29.0
+
+# Container runtime
+container-runtime: docker
+driver: docker
+
+# Addons to enable
+addons:
+  - metrics-server   # Required for HPA analysis
+  - ingress          # For ingress analyzer
+  - ingress-dns      # DNS for ingress
+  # - registry       # Optional: local container registry
+
+# Extra configuration
+extra-config:
+  # Enable admission controllers for webhook analysis
+  apiserver.enable-admission-plugins: "NamespaceLifecycle,LimitRanger,ServiceAccount,DefaultStorageClass,DefaultTolerationSeconds,NodeRestriction,MutatingAdmissionWebhook,ValidatingAdmissionWebhook,ResourceQuota"
+
+# Mount host directories (for Ollama access)
+mount: false
+mount-string: ""
+
+# Network configuration
+# Use host network for easier Ollama access
+# Or use minikube tunnel for LoadBalancer services
+
+---
+# Alternative: Kind cluster configuration
+# kind: Cluster
+# apiVersion: kind.x-k8s.io/v1alpha4
+# name: aegis-cluster
+# nodes:
+#   - role: control-plane
+#     extraPortMappings:
+#       - containerPort: 30000
+#         hostPort: 30000
+#         protocol: TCP
+#       - containerPort: 30001
+#         hostPort: 30001
+#         protocol: TCP
+#   - role: worker
+#   - role: worker

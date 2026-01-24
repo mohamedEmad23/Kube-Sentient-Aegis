@@ -57,8 +57,6 @@ def create_incident_workflow(
         >>> print(result["fix_proposal"].description)
         >>> print(result["verification_plan"].verification_type)
     """
-    log.info("creating_incident_workflow", checkpointer_enabled=checkpointer is not None)
-
     # Initialize StateGraph with IncidentState schema
     builder = StateGraph(IncidentState)
 
@@ -78,14 +76,7 @@ def create_incident_workflow(
     # - verifier_agent always: END
 
     # Compile graph with optional checkpointing
-    if checkpointer:
-        graph = builder.compile(checkpointer=checkpointer)
-        log.info("workflow_compiled", checkpointing="enabled")
-    else:
-        graph = builder.compile()
-        log.info("workflow_compiled", checkpointing="disabled")
-
-    return graph
+    return builder.compile(checkpointer=checkpointer) if checkpointer else builder.compile()
 
 
 # ============================================================================
@@ -106,6 +97,7 @@ async def analyze_incident(
     k8sgpt_analysis: dict[str, Any] | None = None,
     use_checkpoint: bool = False,
     thread_id: str | None = None,
+    use_mock: bool = False,
 ) -> IncidentState:
     """High-level function to analyze an incident through the complete workflow.
 
@@ -129,24 +121,38 @@ async def analyze_incident(
         >>> print(result["rca_result"].root_cause)
         >>> print(result["fix_proposal"].commands)
     """
-    log.info(
-        "starting_incident_analysis",
-        resource=f"{resource_type}/{resource_name}",
-        namespace=namespace,
-    )
-
     # Create initial state
     state = create_initial_state(resource_type, resource_name, namespace)
 
     # Fetch K8sGPT analysis if not provided
     if not k8sgpt_analysis:
         analyzer = get_k8sgpt_analyzer()
-        k8sgpt_result = await analyzer.analyze(resource_type, resource_name, namespace)
+        k8sgpt_result = await analyzer.analyze(
+            resource_type, resource_name, namespace, use_mock=use_mock
+        )
         state["k8sgpt_raw"] = k8sgpt_result.model_dump()
         state["k8sgpt_analysis"] = k8sgpt_result
+        # Store mock kubectl data if available (for development)
+        mock_kubectl = k8sgpt_result.model_dump().get("_mock_kubectl", {})
+        if mock_kubectl:
+            state["kubectl_logs"] = mock_kubectl.get("logs", "")
+            state["kubectl_describe"] = mock_kubectl.get("describe", "")
+            state["kubectl_events"] = mock_kubectl.get("events", "")
     else:
         state["k8sgpt_raw"] = k8sgpt_analysis
         state["k8sgpt_analysis"] = K8sGPTAnalysis.model_validate(k8sgpt_analysis)
+
+    # Exit early if K8sGPT found no problems
+    k8sgpt_data = state["k8sgpt_analysis"]
+    if k8sgpt_data and k8sgpt_data.problems == 0:
+        log.info(
+            "no_problems_detected",
+            resource=f"{resource_type}/{resource_name}",
+            namespace=namespace,
+        )
+        # Not an error - resource is healthy
+        state["no_problems"] = True
+        return state
 
     # Select workflow
     if use_checkpoint:

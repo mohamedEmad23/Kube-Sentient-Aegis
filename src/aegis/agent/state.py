@@ -61,25 +61,33 @@ class FixType(str, Enum):
 class K8sGPTError(BaseModel):
     """Single error from K8sGPT analysis."""
 
-    text: str = Field(description="Error description")
+    model_config = {"populate_by_name": True}
+
+    text: str = Field(description="Error description", alias="Text")
     kubernetes_doc: str | None = Field(
         default=None,
         description="Link to Kubernetes documentation",
+        alias="KubernetesDoc",
     )
     sensitive: list[dict[str, str]] | None = Field(
         default=None,
         description="Sensitive data detected (anonymized)",
+        alias="Sensitive",
     )
 
 
 class K8sGPTResult(BaseModel):
     """Result for a single Kubernetes resource from K8sGPT."""
 
+    model_config = {"populate_by_name": True}
+
     kind: str = Field(description="Resource type (Pod, Deployment, etc.)")
     name: str = Field(description="Resource name")
     namespace: str | None = Field(default=None, description="Resource namespace")
     error: list[K8sGPTError] = Field(description="List of errors detected")
-    parent_object: str | None = Field(default=None, description="Parent resource if applicable")
+    parent_object: str | None = Field(
+        default=None, description="Parent resource if applicable", alias="parentObject"
+    )
 
 
 class K8sGPTAnalysis(BaseModel):
@@ -217,6 +225,7 @@ class IncidentState(TypedDict):
     # ========== Workflow State ==========
     current_agent: AgentNode  # Current agent in workflow
     error: str | None  # Error message if workflow fails
+    no_problems: bool | None  # True if K8sGPT found no problems (healthy resource)
     completed_at: datetime | None  # Workflow completion timestamp
 
     # ========== Agent Communication ==========
@@ -267,6 +276,7 @@ def create_initial_state(
         verification_plan=None,
         current_agent=AgentNode.RCA,
         error=None,
+        no_problems=None,
         completed_at=None,
         messages=[],
         shadow_env_id=None,
