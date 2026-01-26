@@ -413,7 +413,6 @@ async def handle_k8sgpt_result_delete(
 
 @kopf.on.startup()  # type: ignore[misc]
 async def configure_k8sgpt_watching(
-    _settings: kopf.OperatorSettings,
     logger: kopf.Logger,
     **_kwargs: Any,
 ) -> None:
@@ -421,6 +420,10 @@ async def configure_k8sgpt_watching(
 
     This function runs when the operator starts and can be used
     to configure watching behavior or check prerequisites.
+
+    Args:
+        logger: Kopf logger instance.
+        **_kwargs: Additional arguments from kopf.
     """
     logger.info("Configuring K8sGPT Result watching...")
 

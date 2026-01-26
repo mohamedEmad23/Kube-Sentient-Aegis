@@ -27,6 +27,7 @@ import sys
 from typing import NoReturn
 
 import kopf
+from prometheus_client import start_http_server
 
 from aegis.config.settings import settings
 
@@ -129,6 +130,22 @@ def main(
     # Configure watching timeouts
     kopf_settings.watching.server_timeout = settings.kubernetes.api_timeout
     kopf_settings.watching.client_timeout = settings.kubernetes.api_timeout + 10
+
+    # Start Prometheus metrics HTTP server
+    if settings.observability.prometheus_enabled:
+        try:
+            start_http_server(liveness_port)
+            logger.info(
+                "📊 Prometheus metrics server started",
+                port=liveness_port,
+                endpoint=f"http://0.0.0.0:{liveness_port}/metrics",
+            )
+        except OSError as e:
+            logger.warning(
+                "⚠️ Could not start metrics server (port may be in use)",
+                port=liveness_port,
+                error=str(e),
+            )
 
     try:
         # Start the operator (this blocks until stopped)

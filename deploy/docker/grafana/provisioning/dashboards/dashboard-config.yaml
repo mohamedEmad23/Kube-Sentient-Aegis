@@ -1,0 +1,16 @@
+# deploy/docker/grafana/provisioning/dashboards/dashboard-config.yaml
+# Auto-provision AEGIS dashboards
+
+apiVersion: 1
+
+providers:
+  - name: 'AEGIS Dashboards'
+    orgId: 1
+    folder: 'AEGIS'
+    type: file
+    disableDeletion: false
+    editable: true
+    allowUiUpdates: true
+    options:
+      path: /etc/grafana/provisioning/dashboards
+      foldersFromFilesStructure: false

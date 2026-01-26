@@ -23,6 +23,11 @@ from kubernetes.client.rest import ApiException
 
 from aegis.config.settings import settings
 from aegis.observability._logging import get_logger
+from aegis.observability._metrics import (
+    shadow_environments_active,
+    shadow_verification_duration_seconds,
+    shadow_verifications_total,
+)
 
 
 log = get_logger(__name__)
@@ -169,6 +174,9 @@ class ShadowManager:
                 namespace=shadow_namespace,
             )
 
+            # Track active shadow environment
+            shadow_environments_active.labels(runtime=self.runtime).inc()
+
         except Exception as e:
             env.status = ShadowStatus.ERROR
             env.error = str(e)
@@ -204,25 +212,42 @@ class ShadowManager:
         env.logs.append("Starting verification tests")
         duration = duration or self.verification_timeout
 
+        # Determine fix type from changes
+        fix_type = "unknown"
+        if "replicas" in changes:
+            fix_type = "scale"
+        elif "image" in changes:
+            fix_type = "rollback"
+        elif "env" in changes:
+            fix_type = "config_change"
+
         try:
-            # Apply changes to shadow environment
-            await self._apply_changes(env, changes)
-            env.logs.append(f"Applied changes: {list(changes.keys())}")
+            # Track verification duration
+            with shadow_verification_duration_seconds.labels().time():
+                # Apply changes to shadow environment
+                await self._apply_changes(env, changes)
+                env.logs.append(f"Applied changes: {list(changes.keys())}")
 
-            # Monitor health for specified duration
-            health_score = await self._monitor_health(env, duration)
-            env.health_score = health_score
-            env.logs.append(f"Health monitoring complete: score={health_score:.2f}")
+                # Monitor health for specified duration
+                health_score = await self._monitor_health(env, duration)
+                env.health_score = health_score
+                env.logs.append(f"Health monitoring complete: score={health_score:.2f}")
 
-            # Evaluate results
-            passed = health_score >= HEALTH_THRESHOLD
-            env.status = ShadowStatus.PASSED if passed else ShadowStatus.FAILED
-            env.test_results = {
-                "health_score": health_score,
-                "duration": duration,
-                "passed": passed,
-                "timestamp": datetime.now(UTC).isoformat(),
-            }
+                # Evaluate results
+                passed = health_score >= HEALTH_THRESHOLD
+                env.status = ShadowStatus.PASSED if passed else ShadowStatus.FAILED
+                env.test_results = {
+                    "health_score": health_score,
+                    "duration": duration,
+                    "passed": passed,
+                    "timestamp": datetime.now(UTC).isoformat(),
+                }
+
+            # Track verification result
+            shadow_verifications_total.labels(
+                result="passed" if passed else "failed",
+                fix_type=fix_type,
+            ).inc()
 
             log.info(
                 "verification_completed",
@@ -258,6 +283,9 @@ class ShadowManager:
             await self._delete_namespace(env.namespace)
             env.status = ShadowStatus.DELETED
             log.info("shadow_cleaned", shadow_id=shadow_id)
+
+            # Decrement active shadow counter
+            shadow_environments_active.labels(runtime=self.runtime).dec()
 
         except Exception as e:
             log.exception("cleanup_failed", shadow_id=shadow_id)
