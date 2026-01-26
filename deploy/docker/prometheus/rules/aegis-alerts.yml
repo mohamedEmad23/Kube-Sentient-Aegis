@@ -1,0 +1,193 @@
+# deploy/docker/prometheus/rules/aegis-alerts.yml
+# Alerting rules for AEGIS monitoring
+
+groups:
+  - name: aegis_critical_alerts
+    interval: 30s
+    rules:
+      # System health critical alert
+      - alert: AEGISSystemUnhealthy
+        expr: aegis_system_healthy == 0
+        for: 1m
+        labels:
+          severity: critical
+          component: system
+        annotations:
+          summary: "AEGIS system is unhealthy"
+          description: "AEGIS system health check has failed for more than 1 minute"
+
+      # High incident detection rate
+      - alert: HighIncidentRate
+        expr: rate(aegis_incidents_detected_total[5m]) > 5
+        for: 2m
+        labels:
+          severity: warning
+          component: detection
+        annotations:
+          summary: "High incident detection rate"
+          description: "Detecting {{ $value | humanize }} incidents/sec (threshold: 5/sec)"
+
+      # Critical incidents detected
+      - alert: CriticalIncidentDetected
+        expr: increase(aegis_incidents_detected_total{severity="critical"}[1m]) > 0
+        for: 0m
+        labels:
+          severity: critical
+          component: detection
+        annotations:
+          summary: "Critical incident detected"
+          description: "Critical severity incident in namespace {{ $labels.namespace }}"
+
+      # LLM inference failures
+      - alert: LLMInferenceFailures
+        expr: rate(aegis_llm_requests_total{status="error"}[5m]) > 0.1
+        for: 3m
+        labels:
+          severity: warning
+          component: llm
+        annotations:
+          summary: "LLM inference experiencing errors"
+          description: "{{ $labels.model }} has {{ $value | humanize }} errors/sec"
+
+      # High LLM latency
+      - alert: HighLLMLatency
+        expr: |
+          histogram_quantile(0.95,
+            rate(aegis_llm_request_duration_seconds_bucket[5m])
+          ) > 30
+        for: 5m
+        labels:
+          severity: warning
+          component: llm
+        annotations:
+          summary: "High LLM inference latency"
+          description: "95th percentile latency is {{ $value | humanize }}s (threshold: 30s)"
+
+  - name: aegis_shadow_verification_alerts
+    interval: 30s
+    rules:
+      # Shadow verification failures
+      - alert: ShadowVerificationFailures
+        expr: rate(aegis_shadow_verifications_total{result="failed"}[10m]) > 0.2
+        for: 5m
+        labels:
+          severity: warning
+          component: shadow-verification
+        annotations:
+          summary: "High shadow verification failure rate"
+          description: "{{ $value | humanizePercentage }} of shadow tests are failing"
+
+      # Too many active shadow clusters
+      - alert: TooManyShadowClusters
+        expr: aegis_shadow_clusters_active > 10
+        for: 5m
+        labels:
+          severity: warning
+          component: shadow-verification
+        annotations:
+          summary: "Too many active shadow clusters"
+          description: "{{ $value }} shadow clusters active (threshold: 10)"
+
+      # Shadow cluster cleanup needed
+      - alert: ShadowClusterCleanupNeeded
+        expr: aegis_shadow_clusters_active > 5
+        for: 30m
+        labels:
+          severity: info
+          component: shadow-verification
+        annotations:
+          summary: "Shadow clusters need cleanup"
+          description: "{{ $value }} shadow clusters have been active for >30m"
+
+  - name: aegis_operator_alerts
+    interval: 30s
+    rules:
+      # Operator errors
+      - alert: OperatorErrors
+        expr: rate(aegis_operator_errors_total[5m]) > 1
+        for: 2m
+        labels:
+          severity: warning
+          component: operator
+        annotations:
+          summary: "AEGIS operator experiencing errors"
+          description: "{{ $value | humanize }} errors/sec in {{ $labels.component }}"
+
+      # Operator reconciliation failures
+      - alert: ReconciliationFailures
+        expr: |
+          rate(aegis_operator_reconciliations_total{status="error"}[5m]) > 0.5
+        for: 3m
+        labels:
+          severity: warning
+          component: operator
+        annotations:
+          summary: "High reconciliation failure rate"
+          description: "{{ $value | humanize }} reconciliation failures/sec"
+
+      # Operator not scraping
+      - alert: OperatorNotScraping
+        expr: up{job="aegis-operator"} == 0
+        for: 1m
+        labels:
+          severity: critical
+          component: operator
+        annotations:
+          summary: "AEGIS operator is down"
+          description: "Prometheus cannot scrape AEGIS operator metrics"
+
+  - name: aegis_performance_alerts
+    interval: 30s
+    rules:
+      # High HTTP request latency
+      - alert: HighHTTPLatency
+        expr: |
+          histogram_quantile(0.95,
+            rate(aegis_http_request_duration_seconds_bucket[5m])
+          ) > 5
+        for: 5m
+        labels:
+          severity: warning
+          component: api
+        annotations:
+          summary: "High HTTP request latency"
+          description: "95th percentile is {{ $value | humanize }}s for {{ $labels.endpoint }}"
+
+      # High incident resolution time
+      - alert: SlowIncidentResolution
+        expr: |
+          histogram_quantile(0.95,
+            rate(aegis_fix_application_duration_seconds_bucket[10m])
+          ) > 300
+        for: 10m
+        labels:
+          severity: warning
+          component: resolution
+        annotations:
+          summary: "Slow incident resolution"
+          description: "95th percentile resolution time is {{ $value | humanize }}s (threshold: 300s)"
+
+  - name: aegis_resource_alerts
+    interval: 30s
+    rules:
+      # High active connections
+      - alert: HighActiveConnections
+        expr: sum(aegis_active_connections) > 1000
+        for: 5m
+        labels:
+          severity: warning
+          component: resources
+        annotations:
+          summary: "High number of active connections"
+          description: "{{ $value }} active connections (threshold: 1000)"
+
+      # Container down
+      - alert: AEGISContainerDown
+        expr: up{job=~"aegis.*"} == 0
+        for: 1m
+        labels:
+          severity: critical
+          component: infrastructure
+        annotations:
+          summary: "AEGIS container is down"
+          description: "Container {{ $labels.job }} is not responding"

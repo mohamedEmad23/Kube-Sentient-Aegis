@@ -20,6 +20,14 @@ registry = REGISTRY if settings.observability.prometheus_enabled else CollectorR
 # Counter Metrics - Monotonically increasing values
 # ============================================================================
 
+http_requests_total = Counter(
+    name="http_requests_total",
+    documentation="Total HTTP requests received",
+    labelnames=["method", "endpoint", "status_code"],
+    registry=registry,
+    namespace=settings.observability.metrics_namespace,
+)
+
 incidents_detected_total = Counter(
     name="incidents_detected_total",
     documentation="Total number of incidents detected by AEGIS",
@@ -68,10 +76,33 @@ k8sgpt_analyses_total = Counter(
     namespace=settings.observability.metrics_namespace,
 )
 
+operator_errors_total = Counter(
+    name="operator_errors_total",
+    documentation="Total number of operator errors",
+    labelnames=["component", "error_type"],
+    registry=registry,
+    namespace=settings.observability.metrics_namespace,
+)
+
+operator_reconciliations_total = Counter(
+    name="operator_reconciliations_total",
+    documentation="Total number of operator reconciliation attempts",
+    labelnames=["resource_type", "status"],
+    registry=registry,
+    namespace=settings.observability.metrics_namespace,
+)
+
 
 # ============================================================================
 # Gauge Metrics - Values that can go up or down
 # ============================================================================
+
+system_healthy = Gauge(
+    name="system_healthy",
+    documentation="AEGIS system health status (1=healthy, 0=unhealthy)",
+    registry=registry,
+    namespace=settings.observability.metrics_namespace,
+)
 
 active_incidents = Gauge(
     name="active_incidents",
@@ -100,6 +131,15 @@ agent_workflow_in_progress = Gauge(
 # ============================================================================
 # Histogram Metrics - Distribution of values
 # ============================================================================
+
+http_request_duration_seconds = Histogram(
+    name="http_request_duration_seconds",
+    documentation="HTTP request latency in seconds",
+    labelnames=["method", "endpoint"],
+    buckets=[0.01, 0.05, 0.1, 0.5, 1.0, 2.5, 5.0, 10.0],
+    registry=registry,
+    namespace=settings.observability.metrics_namespace,
+)
 
 incident_analysis_duration_seconds = Histogram(
     name="incident_analysis_duration_seconds",
@@ -154,8 +194,11 @@ def initialize_metrics() -> None:
     agent_iterations_total.labels(agent_name="rca_agent", status="completed")
     llm_requests_total.labels(model="phi3:mini", status="success")
     k8sgpt_analyses_total.labels(resource_type="pod", problems_found="0")
+    operator_errors_total.labels(component="operator", error_type="general")
+    operator_reconciliations_total.labels(resource_type="pod", status="success")
 
-    # Initialize gauges to zero
+    # Initialize gauges to starting values
+    system_healthy.set(1)  # Assume healthy at start
     active_incidents.labels(severity="high", namespace="default").set(0)
     shadow_environments_active.labels(runtime="vcluster").set(0)
     agent_workflow_in_progress.set(0)
@@ -172,14 +215,19 @@ __all__ = [
     "agent_workflow_in_progress",
     "fix_application_duration_seconds",
     "fixes_applied_total",
+    "http_request_duration_seconds",
+    "http_requests_total",
     "incident_analysis_duration_seconds",
     "incidents_detected_total",
     "initialize_metrics",
     "k8sgpt_analyses_total",
     "llm_request_duration_seconds",
     "llm_requests_total",
+    "operator_errors_total",
+    "operator_reconciliations_total",
     "registry",
     "shadow_environments_active",
     "shadow_verification_duration_seconds",
     "shadow_verifications_total",
+    "system_healthy",
 ]

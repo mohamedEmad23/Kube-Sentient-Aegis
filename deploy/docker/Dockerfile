@@ -2,6 +2,11 @@
 # Multi-stage build for minimal production image
 
 # ===========================================================================
+# Stage 0: UV Binary
+# ===========================================================================
+FROM ghcr.io/astral-sh/uv:0.9.26 AS uv
+
+# ===========================================================================
 # Stage 1: Builder
 # ===========================================================================
 FROM python:3.12-slim-bookworm AS builder
@@ -9,30 +14,31 @@ FROM python:3.12-slim-bookworm AS builder
 # Set shell with pipefail for safer pipe operations
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
-# Install build dependencies and uv in single layer
+# Copy uv binary from official image
+COPY --from=uv /uv /usr/local/bin/uv
+
+# Install build dependencies
 # hadolint ignore=DL3008
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
-    curl \
     git \
-    && rm -rf /var/lib/apt/lists/* \
-    && curl -LsSf https://astral.sh/uv/install.sh | sh
-ENV PATH="/root/.cargo/bin:${PATH}"
+    && rm -rf /var/lib/apt/lists/*
 
 # Set working directory
 WORKDIR /app
 
-# Copy dependency files
-COPY pyproject.toml uv.lock* ./
+# Copy dependency files and README (required by hatchling)
+COPY pyproject.toml README.md ./
+COPY uv.lock* ./
 
-# Create virtual environment and install dependencies
-RUN uv venv /app/.venv && uv sync --frozen --no-dev
+# Create virtual environment and install dependencies using uv
+ENV UV_COMPILE_BYTECODE=1
+ENV UV_LINK_MODE=copy
+RUN uv venv /app/.venv && \
+    uv sync --frozen --no-dev
 
 # Copy source code
 COPY src/ ./src/
-
-# Build the package
-RUN uv build --wheel
 
 # ===========================================================================
 # Stage 2: Runtime
@@ -53,12 +59,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Set working directory
 WORKDIR /app
 
-# Copy virtual environment from builder
+# Copy virtual environment from builder (includes all dependencies)
 COPY --from=builder /app/.venv /app/.venv
 
-# Copy built wheel and install
-COPY --from=builder /app/dist/*.whl /tmp/
-RUN /app/.venv/bin/pip install /tmp/*.whl && rm /tmp/*.whl
+# Copy source code
+COPY --from=builder /app/src /app/src
+COPY --from=builder /app/pyproject.toml /app/pyproject.toml
 
 # Add venv to PATH
 ENV PATH="/app/.venv/bin:${PATH}"
