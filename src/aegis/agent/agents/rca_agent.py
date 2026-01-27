@@ -25,6 +25,43 @@ log = get_logger(__name__)
 RCA_CONFIDENCE_THRESHOLD = 0.7
 
 
+def _ensure_rca_verbosity(state: IncidentState, rca_result: RCAResult) -> RCAResult:
+    """Ensure verbose RCA fields are populated with safe fallbacks."""
+    updates: dict[str, object] = {}
+
+    if not rca_result.analysis_steps:
+        updates["analysis_steps"] = [
+            "Reviewed K8sGPT analysis and kubectl outputs for the incident context.",
+            f"Identified symptoms for {state['resource_type']}/{state['resource_name']}.",
+            f"Determined the most likely root cause: {rca_result.root_cause}.",
+        ]
+
+    if not rca_result.evidence_summary:
+        evidence: list[str] = []
+        if state.get("kubectl_logs"):
+            evidence.append("Pod logs reviewed for explicit error messages.")
+        if state.get("kubectl_describe"):
+            evidence.append("kubectl describe output reviewed for status conditions.")
+        if state.get("kubectl_events"):
+            evidence.append("Recent events reviewed for warnings and restarts.")
+        k8s_analysis = state.get("k8sgpt_analysis")
+        if k8s_analysis:
+            evidence.append(f"K8sGPT reported {k8s_analysis.problems} problem(s).")
+        updates["evidence_summary"] = evidence or ["Evidence summarized in reasoning."]
+
+    if not rca_result.decision_rationale:
+        updates["decision_rationale"] = rca_result.reasoning
+
+    return rca_result.model_copy(update=updates) if updates else rca_result
+
+
+def _truncate(text: str, limit: int = 200) -> str:
+    """Truncate long text for logging."""
+    if len(text) <= limit:
+        return text
+    return f"{text[:limit]}…"
+
+
 async def rca_agent(
     state: IncidentState,
 ) -> Command[Literal["solution_agent", "__end__"]]:
@@ -47,6 +84,13 @@ async def rca_agent(
         "rca_agent_started",
         resource=f"{state['resource_type']}/{state['resource_name']}",
         namespace=state["namespace"],
+    )
+    log.debug(
+        "rca_agent_context",
+        has_k8sgpt=bool(state.get("k8sgpt_raw")),
+        logs_len=len(state.get("kubectl_logs") or ""),
+        describe_len=len(state.get("kubectl_describe") or ""),
+        events_len=len(state.get("kubectl_events") or ""),
     )
 
     ollama = get_ollama_client()
@@ -79,6 +123,7 @@ async def rca_agent(
             )
             # Type assertion for runtime verification
             assert isinstance(rca_result, RCAResult)
+            rca_result = _ensure_rca_verbosity(state, rca_result)
 
         # Record metrics
         agent_iterations_total.labels(
@@ -91,6 +136,13 @@ async def rca_agent(
             root_cause=rca_result.root_cause[:100],
             severity=rca_result.severity.value,
             confidence=rca_result.confidence_score,
+        )
+        log.debug(
+            "rca_agent_output",
+            analysis_steps_count=len(rca_result.analysis_steps),
+            evidence_count=len(rca_result.evidence_summary),
+            decision_rationale=_truncate(rca_result.decision_rationale, 240),
+            reasoning=_truncate(rca_result.reasoning, 240),
         )
 
         # Update messages with AI response

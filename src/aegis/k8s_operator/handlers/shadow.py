@@ -101,7 +101,7 @@ async def shadow_verification_daemon(
     )
 
     # Update metrics
-    shadow_environments_active.labels(runtime="vcluster").inc()
+    shadow_environments_active.labels(runtime=settings.shadow.runtime.value).inc()
 
     # Mark daemon as active in deployment annotations
     patch.metadata.annotations["aegis.io/shadow-daemon-active"] = "true"
@@ -192,7 +192,7 @@ async def shadow_verification_daemon(
             "🛑 Shadow verification daemon stopped",
             deployment=name,
         )
-        shadow_environments_active.labels(runtime="vcluster").dec()
+        shadow_environments_active.labels(runtime=settings.shadow.runtime.value).dec()
 
         patch.metadata.annotations["aegis.io/shadow-daemon-active"] = "false"
         patch.metadata.annotations["aegis.io/shadow-daemon-stopped"] = datetime.now(UTC).isoformat()

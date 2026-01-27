@@ -1,11 +1,9 @@
-# deploy/docker/prometheus/rules/aegis-alerts.yml
-# Alerting rules for AEGIS monitoring
+# AEGIS Prometheus alert rules
 
 groups:
-  - name: aegis_critical_alerts
+  - name: aegis_core_alerts
     interval: 30s
     rules:
-      # System health critical alert
       - alert: AEGISSystemUnhealthy
         expr: aegis_system_healthy == 0
         for: 1m
@@ -14,46 +12,68 @@ groups:
           component: system
         annotations:
           summary: "AEGIS system is unhealthy"
-          description: "AEGIS system health check has failed for more than 1 minute"
+          description: "System health check has failed for more than 1 minute."
 
-      # High incident detection rate
-      - alert: HighIncidentRate
-        expr: rate(aegis_incidents_detected_total[5m]) > 5
-        for: 2m
-        labels:
-          severity: warning
-          component: detection
-        annotations:
-          summary: "High incident detection rate"
-          description: "Detecting {{ $value | humanize }} incidents/sec (threshold: 5/sec)"
-
-      # Critical incidents detected
       - alert: CriticalIncidentDetected
-        expr: increase(aegis_incidents_detected_total{severity="critical"}[1m]) > 0
+        expr: increase(aegis_incidents_detected_total{severity="critical"}[5m]) > 0
         for: 0m
         labels:
           severity: critical
           component: detection
         annotations:
           summary: "Critical incident detected"
-          description: "Critical severity incident in namespace {{ $labels.namespace }}"
+          description: "Critical severity incident detected in {{ $labels.namespace }}."
 
-      # LLM inference failures
+      - alert: HighIncidentRate
+        expr: sum(rate(aegis_incidents_detected_total[5m])) > 0.2
+        for: 5m
+        labels:
+          severity: warning
+          component: detection
+        annotations:
+          summary: "High incident detection rate"
+          description: "Incident rate is {{ $value | humanize }} per second."
+
+      - alert: HighAgentErrorRate
+        expr: |
+          (
+            sum(rate(aegis_agent_iterations_total{status="error"}[5m]))
+            /
+            clamp_min(sum(rate(aegis_agent_iterations_total[5m])), 1)
+          ) > 0.05
+        for: 5m
+        labels:
+          severity: warning
+          component: agents
+        annotations:
+          summary: "Agent error rate elevated"
+          description: "More than 5% of agent iterations are failing."
+
+      - alert: AgentWorkflowBacklog
+        expr: aegis_agent_workflow_in_progress > 5
+        for: 3m
+        labels:
+          severity: warning
+          component: agents
+        annotations:
+          summary: "Agent workflow backlog"
+          description: "More than 5 workflows running concurrently."
+
       - alert: LLMInferenceFailures
-        expr: rate(aegis_llm_requests_total{status="error"}[5m]) > 0.1
+        expr: sum(rate(aegis_llm_requests_total{status="error"}[5m])) > 0.05
         for: 3m
         labels:
           severity: warning
           component: llm
         annotations:
-          summary: "LLM inference experiencing errors"
-          description: "{{ $labels.model }} has {{ $value | humanize }} errors/sec"
+          summary: "LLM inference errors detected"
+          description: "{{ $value | humanize }} errors/sec across models."
 
-      # High LLM latency
       - alert: HighLLMLatency
         expr: |
-          histogram_quantile(0.95,
-            rate(aegis_llm_request_duration_seconds_bucket[5m])
+          histogram_quantile(
+            0.95,
+            sum by (le, model) (rate(aegis_llm_request_duration_seconds_bucket[5m]))
           ) > 30
         for: 5m
         labels:
@@ -61,71 +81,60 @@ groups:
           component: llm
         annotations:
           summary: "High LLM inference latency"
-          description: "95th percentile latency is {{ $value | humanize }}s (threshold: 30s)"
+          description: "95th percentile latency exceeded 30s for model {{ $labels.model }}."
 
-  - name: aegis_shadow_verification_alerts
+  - name: aegis_shadow_alerts
     interval: 30s
     rules:
-      # Shadow verification failures
-      - alert: ShadowVerificationFailures
-        expr: rate(aegis_shadow_verifications_total{result="failed"}[10m]) > 0.2
+      - alert: ShadowVerificationFailureRate
+        expr: |
+          (
+            sum(rate(aegis_shadow_verifications_total{result="failed"}[10m]))
+            /
+            clamp_min(sum(rate(aegis_shadow_verifications_total[10m])), 1)
+          ) > 0.2
         for: 5m
         labels:
           severity: warning
           component: shadow-verification
         annotations:
-          summary: "High shadow verification failure rate"
-          description: "{{ $value | humanizePercentage }} of shadow tests are failing"
+          summary: "Shadow verification failure rate high"
+          description: "More than 20% of shadow verifications are failing."
 
-      # Too many active shadow clusters
-      - alert: TooManyShadowClusters
-        expr: aegis_shadow_clusters_active > 10
+      - alert: TooManyShadowEnvironments
+        expr: sum(aegis_shadow_environments_active) > 5
         for: 5m
         labels:
           severity: warning
           component: shadow-verification
         annotations:
-          summary: "Too many active shadow clusters"
-          description: "{{ $value }} shadow clusters active (threshold: 10)"
-
-      # Shadow cluster cleanup needed
-      - alert: ShadowClusterCleanupNeeded
-        expr: aegis_shadow_clusters_active > 5
-        for: 30m
-        labels:
-          severity: info
-          component: shadow-verification
-        annotations:
-          summary: "Shadow clusters need cleanup"
-          description: "{{ $value }} shadow clusters have been active for >30m"
+          summary: "Too many active shadow environments"
+          description: "{{ $value }} active shadow environments (threshold: 5)."
 
   - name: aegis_operator_alerts
     interval: 30s
     rules:
-      # Operator errors
       - alert: OperatorErrors
-        expr: rate(aegis_operator_errors_total[5m]) > 1
-        for: 2m
+        expr: sum(rate(aegis_operator_errors_total[5m])) > 0.1
+        for: 3m
         labels:
           severity: warning
           component: operator
         annotations:
-          summary: "AEGIS operator experiencing errors"
-          description: "{{ $value | humanize }} errors/sec in {{ $labels.component }}"
+          summary: "Operator errors detected"
+          description: "{{ $value | humanize }} errors/sec in operator components."
 
-      # Operator reconciliation failures
       - alert: ReconciliationFailures
         expr: |
-          rate(aegis_operator_reconciliations_total{status="error"}[5m]) > 0.5
+          sum(rate(aegis_operator_reconciliations_total{status="error"}[5m])) > 0.2
         for: 3m
         labels:
           severity: warning
           component: operator
         annotations:
           summary: "High reconciliation failure rate"
-          description: "{{ $value | humanize }} reconciliation failures/sec"
+          description: "{{ $value | humanize }} reconciliation failures/sec."
 
-      # Operator not scraping
       - alert: OperatorNotScraping
         expr: up{job="aegis-operator"} == 0
         for: 1m
@@ -134,16 +143,16 @@ groups:
           component: operator
         annotations:
           summary: "AEGIS operator is down"
-          description: "Prometheus cannot scrape AEGIS operator metrics"
+          description: "Prometheus cannot scrape operator metrics."
 
   - name: aegis_performance_alerts
     interval: 30s
     rules:
-      # High HTTP request latency
       - alert: HighHTTPLatency
         expr: |
-          histogram_quantile(0.95,
-            rate(aegis_http_request_duration_seconds_bucket[5m])
+          histogram_quantile(
+            0.95,
+            sum by (le, endpoint) (rate(aegis_http_request_duration_seconds_bucket[5m]))
           ) > 5
         for: 5m
         labels:
@@ -151,37 +160,25 @@ groups:
           component: api
         annotations:
           summary: "High HTTP request latency"
-          description: "95th percentile is {{ $value | humanize }}s for {{ $labels.endpoint }}"
+          description: "95th percentile latency exceeds 5s for {{ $labels.endpoint }}."
 
-      # High incident resolution time
-      - alert: SlowIncidentResolution
+      - alert: SlowFixApplication
         expr: |
-          histogram_quantile(0.95,
-            rate(aegis_fix_application_duration_seconds_bucket[10m])
+          histogram_quantile(
+            0.95,
+            sum by (le, fix_type) (rate(aegis_fix_application_duration_seconds_bucket[10m]))
           ) > 300
         for: 10m
         labels:
           severity: warning
           component: resolution
         annotations:
-          summary: "Slow incident resolution"
-          description: "95th percentile resolution time is {{ $value | humanize }}s (threshold: 300s)"
+          summary: "Slow fix application"
+          description: "95th percentile fix application exceeds 300s for {{ $labels.fix_type }}."
 
-  - name: aegis_resource_alerts
+  - name: aegis_infrastructure_alerts
     interval: 30s
     rules:
-      # High active connections
-      - alert: HighActiveConnections
-        expr: sum(aegis_active_connections) > 1000
-        for: 5m
-        labels:
-          severity: warning
-          component: resources
-        annotations:
-          summary: "High number of active connections"
-          description: "{{ $value }} active connections (threshold: 1000)"
-
-      # Container down
       - alert: AEGISContainerDown
         expr: up{job=~"aegis.*"} == 0
         for: 1m
@@ -190,4 +187,4 @@ groups:
           component: infrastructure
         annotations:
           summary: "AEGIS container is down"
-          description: "Container {{ $labels.job }} is not responding"
+          description: "Container {{ $labels.job }} is not responding."
