@@ -143,6 +143,11 @@ test-watch: ## Run tests in watch mode
 	@echo -e "$(BLUE)Running tests in watch mode...$(NC)"
 	$(UV) run pytest-watch -- tests/unit/ -v
 
+test-all: ## Run complete test suite (unit + integration + docker + observability)
+	@echo -e "$(BLUE)Running complete test suite...$(NC)"
+	@chmod +x scripts/test-all.sh
+	@./scripts/test-all.sh
+
 ##@ GPU & Ollama
 
 gpu-check: ## Check GPU availability and configuration

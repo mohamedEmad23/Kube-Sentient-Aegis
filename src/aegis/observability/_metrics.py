@@ -200,7 +200,7 @@ def initialize_metrics() -> None:
     # Initialize gauges to starting values
     system_healthy.set(1)  # Assume healthy at start
     active_incidents.labels(severity="high", namespace="default").set(0)
-    shadow_environments_active.labels(runtime="vcluster").set(0)
+    shadow_environments_active.labels(runtime=settings.shadow.runtime.value).set(0)
     agent_workflow_in_progress.set(0)
 
 

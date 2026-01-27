@@ -29,6 +29,9 @@ Key principles:
 
 Output format:
 - Root cause: Single sentence primary cause
+- Step-by-step analysis: 3-6 bullet points based on observed data
+- Evidence summary: 2-5 short bullets referencing logs/events/K8sGPT
+- Decision rationale: Why this root cause is the best explanation
 - Contributing factors: List of secondary issues
 - Severity: critical/high/medium/low/info
 - Confidence: 0.0-1.0 score
@@ -72,6 +75,9 @@ You MUST respond with ONLY valid JSON matching this EXACT schema (no markdown, n
 
 {{
   "root_cause": "<string describing primary cause>",
+  "analysis_steps": ["<step1>", "<step2>", "<step3>"],
+  "evidence_summary": ["<evidence1>", "<evidence2>"],
+  "decision_rationale": "<why this root cause fits best>",
   "contributing_factors": ["<factor1>", "<factor2>"],
   "severity": "<one of: critical, high, medium, low, info>",
   "confidence_score": <number between 0.0 and 1.0>,
@@ -82,6 +88,17 @@ You MUST respond with ONLY valid JSON matching this EXACT schema (no markdown, n
 Example response:
 {{
   "root_cause": "Pod is experiencing OOMKilled due to memory limit set too low (128Mi) while application requires 256Mi",
+  "analysis_steps": [
+    "Reviewed pod logs and found OOMKill messages",
+    "Checked describe output for memory limits and last termination reason",
+    "Correlated K8sGPT OOMKilled finding with container memory usage"
+  ],
+  "evidence_summary": [
+    "Logs show 'OOMKilled' and restart events",
+    "K8sGPT reports OOMKilled for the pod",
+    "Describe output shows memory limit 128Mi"
+  ],
+  "decision_rationale": "Both logs and K8sGPT confirm memory exhaustion; no other errors appear in events",
   "contributing_factors": ["No memory requests defined", "Memory leak in v2.3.1 of the application"],
   "severity": "high",
   "confidence_score": 0.92,

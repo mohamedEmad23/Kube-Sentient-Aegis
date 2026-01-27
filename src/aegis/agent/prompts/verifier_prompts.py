@@ -11,7 +11,7 @@ Your role:
 2. Create shadow environment test scenarios
 3. Define success criteria and health checks
 4. Plan load testing with Locust
-5. Include security checks (Trivy, OWASP ZAP)
+5. Keep security_checks empty (security scanning is out of scope for this MVP)
 
 CRITICAL RULES - YOU MUST FOLLOW THESE:
 1. Verification plans must be appropriate for the fix type provided
@@ -26,7 +26,6 @@ Key principles:
 - Test in shadow/staging BEFORE production
 - Define clear, measurable success criteria
 - Include load testing for performance validation
-- Run security scans on new configurations
 - Plan for automatic rollback on failure
 - Require human approval for high-risk changes
 
@@ -45,11 +44,13 @@ Test scenarios to include:
 
 Output format:
 - Verification type: shadow/canary/blue-green/manual
+- Step-by-step analysis: 3-6 bullet points for verification strategy
+- Decision rationale: Why this verification plan matches the risk profile
 - Test scenarios: List of tests to run
 - Success criteria: Measurable conditions
 - Duration: Expected test time in seconds
 - Load test config: Locust parameters
-- Security checks: Trivy, ZAP, etc.
+- Security checks: MUST be an empty list for this MVP
 - Rollback on failure: yes/no
 - Approval required: yes/no
 """
@@ -84,19 +85,27 @@ class LoadTestConfig(BaseModel):
 
 class VerificationPlan(BaseModel):
     verification_type: Literal["shadow", "canary", "blue-green", "manual"]
+    analysis_steps: list[str]
+    decision_rationale: str
     test_scenarios: list[str]  # Tests to run
     success_criteria: list[str]  # Measurable conditions for success
     duration: int  # Total test duration in seconds
     load_test_config: LoadTestConfig  # Locust configuration
-    security_checks: list[str]  # ["trivy", "zap-baseline", etc]
+    security_checks: list[str]  # Must be [] for MVP (security scanning disabled)
     rollback_on_failure: bool  # Auto-rollback if tests fail
     approval_required: bool  # Require human approval
 
 Example valid JSON:
 {{
   "verification_type": "shadow",
-  "test_scenarios": ["Functional test", "Load test at 100 RPS", "Security scan"],
-  "success_criteria": ["Response time < 100ms", "Error rate < 1%", "No critical vulnerabilities"],
+  "analysis_steps": [
+    "Matched verification type to fix risk and severity",
+    "Selected shadow environment to avoid production impact",
+    "Defined measurable success criteria aligned to root cause"
+  ],
+  "decision_rationale": "Shadow testing provides isolation while validating the exact fix with realistic traffic",
+  "test_scenarios": ["Functional test", "Load test at 100 RPS", "Rollback rehearsal"],
+  "success_criteria": ["Response time < 100ms", "Error rate < 1%", "Rollback completes within 2 minutes"],
   "duration": 300,
   "load_test_config": {{
     "users": 100,
@@ -104,7 +113,7 @@ Example valid JSON:
     "duration_seconds": 180,
     "target_url": "http://nginx.default.svc.cluster.local"
   }},
-  "security_checks": ["trivy"],
+  "security_checks": [],
   "rollback_on_failure": true,
   "approval_required": false
 }}
@@ -114,7 +123,7 @@ Generate your verification plan following this EXACT structure:
 Requirements:
 - Use shadow verification for high-risk changes
 - Include load testing if service handles traffic
-- Run Trivy scan if containers changed
+- Leave security_checks as an empty list (security scanning is out of scope)
 - Define MEASURABLE success criteria (response time < 100ms, error rate < 1%)
 - Plan for at least 5 minutes of testing
 - Require approval for production databases or critical services

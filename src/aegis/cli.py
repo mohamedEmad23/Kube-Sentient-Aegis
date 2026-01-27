@@ -194,10 +194,27 @@ def _display_analysis_results(console: Console, result: dict[str, Any]) -> None:
     # Display RCA Results
     rca_result = result.get("rca_result")
     if rca_result:
+        analysis_steps = rca_result.analysis_steps or []
+        evidence_summary = rca_result.evidence_summary or []
+        steps_text = (
+            "\n".join(f"  {idx}. {step}" for idx, step in enumerate(analysis_steps, start=1))
+            if analysis_steps
+            else "  • (not provided)"
+        )
+        evidence_text = (
+            "\n".join(f"  • {item}" for item in evidence_summary)
+            if evidence_summary
+            else "  • (not provided)"
+        )
+        decision_rationale = rca_result.decision_rationale or "(not provided)"
+
         rca_panel = Panel(
             f"[bold]Root Cause:[/bold] {rca_result.root_cause}\n\n"
             f"[bold]Severity:[/bold] {rca_result.severity.value.upper()}\n"
             f"[bold]Confidence:[/bold] {rca_result.confidence_score:.2f}\n\n"
+            f"[bold]Step-by-Step Analysis:[/bold]\n{steps_text}\n\n"
+            f"[bold]Evidence Summary:[/bold]\n{evidence_text}\n\n"
+            f"[bold]Decision Rationale:[/bold]\n{decision_rationale}\n\n"
             f"[bold]Reasoning:[/bold]\n{rca_result.reasoning}\n\n"
             f"[bold]Affected Components:[/bold]\n"
             + "\n".join(f"  • {comp}" for comp in rca_result.affected_components),
@@ -213,6 +230,18 @@ def _display_analysis_results(console: Console, result: dict[str, Any]) -> None:
         fix_text = (
             f"[bold]Type:[/bold] {fix_proposal.fix_type.value}\n"
             f"[bold]Description:[/bold] {fix_proposal.description}\n\n"
+            f"[bold]Step-by-Step Analysis:[/bold]\n"
+            + (
+                "\n".join(
+                    f"  {idx}. {step}"
+                    for idx, step in enumerate(fix_proposal.analysis_steps, start=1)
+                )
+                if fix_proposal.analysis_steps
+                else "  • (not provided)"
+            )
+            + "\n\n"
+            f"[bold]Decision Rationale:[/bold]\n"
+            f"{fix_proposal.decision_rationale or '(not provided)'}\n\n"
             f"[bold]Commands:[/bold]\n"
         )
         for cmd in fix_proposal.commands:
@@ -240,6 +269,18 @@ def _display_analysis_results(console: Console, result: dict[str, Any]) -> None:
         verify_text = (
             f"[bold]Type:[/bold] {verification_plan.verification_type}\n"
             f"[bold]Duration:[/bold] {verification_plan.duration}s\n\n"
+            f"[bold]Step-by-Step Analysis:[/bold]\n"
+            + (
+                "\n".join(
+                    f"  {idx}. {step}"
+                    for idx, step in enumerate(verification_plan.analysis_steps, start=1)
+                )
+                if verification_plan.analysis_steps
+                else "  • (not provided)"
+            )
+            + "\n\n"
+            f"[bold]Decision Rationale:[/bold]\n"
+            f"{verification_plan.decision_rationale or '(not provided)'}\n\n"
             f"[bold]Test Scenarios:[/bold]\n"
         )
         for scenario in verification_plan.test_scenarios:

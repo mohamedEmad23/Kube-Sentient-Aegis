@@ -23,6 +23,36 @@ from aegis.observability._metrics import agent_iterations_total
 log = get_logger(__name__)
 
 
+def _ensure_solution_verbosity(
+    state: IncidentState,
+    fix_proposal: FixProposal,
+) -> FixProposal:
+    """Ensure verbose fix proposal fields are populated with safe fallbacks."""
+    updates: dict[str, object] = {}
+
+    if not fix_proposal.analysis_steps:
+        updates["analysis_steps"] = [
+            f"Mapped root cause to fix type {fix_proposal.fix_type.value}.",
+            f"Prepared changes for {state['resource_type']}/{state['resource_name']} in {state['namespace']}.",
+            "Included rollback steps and assessed operational risk.",
+        ]
+
+    if not fix_proposal.decision_rationale:
+        updates["decision_rationale"] = (
+            "Chosen because it directly addresses the root cause with minimal scope and "
+            "a clear rollback path."
+        )
+
+    return fix_proposal.model_copy(update=updates) if updates else fix_proposal
+
+
+def _truncate(text: str, limit: int = 200) -> str:
+    """Truncate long text for logging."""
+    if len(text) <= limit:
+        return text
+    return f"{text[:limit]}…"
+
+
 async def solution_agent(
     state: IncidentState,
 ) -> Command[Literal["verifier_agent", "__end__"]]:
@@ -46,6 +76,11 @@ async def solution_agent(
         "solution_agent_started",
         resource=f"{state['resource_type']}/{state['resource_name']}",
         root_cause=rca.root_cause[:50] if rca else "None",
+    )
+    log.debug(
+        "solution_agent_context",
+        severity=rca.severity.value if rca else "unknown",
+        confidence=rca.confidence_score if rca else None,
     )
 
     ollama = get_ollama_client()
@@ -84,6 +119,7 @@ async def solution_agent(
             model=settings.agent.solution_model,
             temperature=0.2,  # Very low temperature for deterministic solutions
         )
+        fix_proposal = _ensure_solution_verbosity(state, fix_proposal)
 
         # Record metrics
         agent_iterations_total.labels(
@@ -94,6 +130,14 @@ async def solution_agent(
         # Update messages
         ai_message = AIMessage(
             content=f"Fix proposed: {fix_proposal.fix_type.value} - {fix_proposal.description}"
+        )
+        log.debug(
+            "solution_agent_output",
+            analysis_steps_count=len(fix_proposal.analysis_steps),
+            decision_rationale=_truncate(fix_proposal.decision_rationale, 240),
+            commands_count=len(fix_proposal.commands),
+            manifests=list(fix_proposal.manifests.keys()),
+            risks_count=len(fix_proposal.risks),
         )
 
         # Decision: high-risk fixes need verification

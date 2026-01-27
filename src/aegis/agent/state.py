@@ -103,6 +103,18 @@ class RCAResult(BaseModel):
     """Root Cause Analysis output from RCA agent."""
 
     root_cause: str = Field(description="Primary root cause identified")
+    analysis_steps: list[str] = Field(
+        default_factory=list,
+        description="Step-by-step analysis performed by the agent",
+    )
+    evidence_summary: list[str] = Field(
+        default_factory=list,
+        description="Evidence summary with direct observations",
+    )
+    decision_rationale: str = Field(
+        default="",
+        description="Why this root cause was selected over alternatives",
+    )
     contributing_factors: list[str] = Field(
         default_factory=list,
         description="Additional factors contributing to the incident",
@@ -126,6 +138,14 @@ class FixProposal(BaseModel):
 
     fix_type: FixType = Field(description="Type of fix proposed")
     description: str = Field(description="Human-readable fix description")
+    analysis_steps: list[str] = Field(
+        default_factory=list,
+        description="Step-by-step reasoning for the proposed fix",
+    )
+    decision_rationale: str = Field(
+        default="",
+        description="Why this fix is the safest and most effective option",
+    )
     commands: list[str] = Field(
         default_factory=list,
         description="kubectl commands to execute",
@@ -157,11 +177,28 @@ class FixProposal(BaseModel):
     )
 
 
+class LoadTestConfig(BaseModel):
+    """Structured load testing configuration."""
+
+    users: int = Field(ge=1, description="Number of concurrent users")
+    spawn_rate: int = Field(ge=1, description="User spawn rate per second")
+    duration_seconds: int = Field(ge=10, description="Total test duration in seconds")
+    target_url: str = Field(description="Target URL for load test")
+
+
 class VerificationPlan(BaseModel):
     """Verification plan from Verifier agent."""
 
     verification_type: Literal["shadow", "canary", "blue-green", "manual"] = Field(
         description="Type of verification to perform"
+    )
+    analysis_steps: list[str] = Field(
+        default_factory=list,
+        description="Step-by-step reasoning for the verification plan",
+    )
+    decision_rationale: str = Field(
+        default="",
+        description="Why this verification strategy was chosen",
     )
     test_scenarios: list[str] = Field(
         description="Test scenarios to execute in shadow environment",
@@ -173,13 +210,13 @@ class VerificationPlan(BaseModel):
         ge=60,
         description="Expected verification duration in seconds",
     )
-    load_test_config: dict[str, Any] | None = Field(
+    load_test_config: LoadTestConfig | None = Field(
         default=None,
         description="Locust load test configuration",
     )
     security_checks: list[str] = Field(
         default_factory=list,
-        description="Security checks to perform (Trivy, ZAP)",
+        description="Security checks to perform (currently disabled in MVP)",
     )
     rollback_on_failure: bool = Field(
         default=True,
@@ -294,6 +331,7 @@ __all__ = [
     "K8sGPTAnalysis",
     "K8sGPTError",
     "K8sGPTResult",
+    "LoadTestConfig",
     "RCAResult",
     "VerificationPlan",
     "create_initial_state",

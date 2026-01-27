@@ -42,6 +42,8 @@ Fix types:
 Output format:
 - Fix type: One of the types above
 - Description: Clear explanation of the fix
+- Step-by-step analysis: 3-6 bullet points for why the fix works
+- Decision rationale: Why this fix is safest and most effective
 - Commands: List of kubectl commands
 - Manifests: YAML files to apply
 - Rollback: Commands to undo the fix
@@ -76,6 +78,8 @@ The JSON must match this EXACT schema (Pydantic model):
 class FixProposal(BaseModel):
     fix_type: Literal["config_change", "restart", "scale", "rollback", "patch", "manual"]
     description: str  # Clear explanation of what the fix does
+    analysis_steps: list[str]  # Step-by-step reasoning for the fix
+    decision_rationale: str  # Why this fix is safest and most effective
     commands: list[str]  # kubectl commands to apply the fix
     manifests: dict[str, str]  # YAML manifests {{"filename.yaml": "yaml content"}}
     rollback_commands: list[str]  # Commands to undo the fix
@@ -88,6 +92,12 @@ Example valid JSON:
 {{
   "fix_type": "config_change",
   "description": "Increase memory limit to 512Mi",
+  "analysis_steps": [
+    "Verified OOMKilled root cause points to insufficient memory limit",
+    "Selected a higher limit based on observed peak usage plus headroom",
+    "Ensured changes are applied with rolling update"
+  ],
+  "decision_rationale": "Increasing memory limit addresses the failure directly with minimal risk and no code changes",
   "commands": ["kubectl set resources deployment/nginx --limits=memory=512Mi"],
   "manifests": {{"nginx-patch.yaml": "apiVersion: apps/v1\nkind: Deployment\nmetadata:\n  name: nginx\nspec:\n  template:\n    spec:\n      containers:\n      - name: nginx\n        resources:\n          limits:\n            memory: 512Mi"}},
   "rollback_commands": ["kubectl set resources deployment/nginx --limits=memory=256Mi"],
