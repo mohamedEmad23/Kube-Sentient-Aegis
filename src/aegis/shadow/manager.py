@@ -228,6 +228,43 @@ class ShadowManager:
                 await self._apply_changes(env, changes)
                 env.logs.append(f"Applied changes: {list(changes.keys())}")
 
+                # ----------------------------------------------------------------
+                # Security gate: Trivy image scan (fail closed)
+                # ----------------------------------------------------------------
+                trivy_result: dict[str, Any] | None = None
+                if settings.security.trivy_enabled and "image" in changes:
+                    from aegis.security.trivy import TrivyScanner
+
+                    image = str(changes["image"])
+                    env.logs.append(
+                        f"Running Trivy image scan (severity={settings.security.trivy_severity}): {image}"
+                    )
+                    trivy_result = await TrivyScanner().scan_image(
+                        image,
+                        severity_csv=settings.security.trivy_severity,
+                        fail_on_csv=settings.security.trivy_severity,
+                    )
+
+                    if not trivy_result.get("passed", False):
+                        env.status = ShadowStatus.FAILED
+                        env.test_results = {
+                            "passed": False,
+                            "timestamp": datetime.now(UTC).isoformat(),
+                            "trivy": trivy_result,
+                        }
+                        env.logs.append(
+                            f"Trivy failed: {trivy_result.get('severity_counts', {})} "
+                            f"error={trivy_result.get('error')}"
+                        )
+                        log.warning(
+                            "shadow_verification_blocked_by_trivy",
+                            shadow_id=shadow_id,
+                            image=image,
+                            severity_counts=trivy_result.get("severity_counts"),
+                            error=trivy_result.get("error"),
+                        )
+                        return False
+
                 # Monitor health for specified duration
                 health_score = await self._monitor_health(env, duration)
                 env.health_score = health_score
@@ -241,6 +278,7 @@ class ShadowManager:
                     "duration": duration,
                     "passed": passed,
                     "timestamp": datetime.now(UTC).isoformat(),
+                    **({"trivy": trivy_result} if trivy_result is not None else {}),
                 }
 
             # Track verification result
