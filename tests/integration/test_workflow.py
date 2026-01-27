@@ -141,6 +141,9 @@ async def test_rca_agent_output_structure():
     assert isinstance(rca.severity, IncidentSeverity)
     assert isinstance(rca.confidence_score, float)
     assert isinstance(rca.reasoning, str)
+    assert isinstance(rca.analysis_steps, list)
+    assert isinstance(rca.evidence_summary, list)
+    assert isinstance(rca.decision_rationale, str)
     assert isinstance(rca.affected_components, list)
     assert all(isinstance(comp, str) for comp in rca.affected_components)
 
@@ -159,6 +162,8 @@ async def test_solution_agent_output_structure():
         fix = result["fix_proposal"]
         assert fix is not None, "Fix proposal should not be None when present"
         assert isinstance(fix.description, str)
+        assert isinstance(fix.analysis_steps, list)
+        assert isinstance(fix.decision_rationale, str)
         assert isinstance(fix.commands, list)
         assert all(isinstance(cmd, str) for cmd in fix.commands)
 
@@ -177,9 +182,14 @@ async def test_verifier_agent_output_structure():
         verify = result["verification_plan"]
         assert verify is not None, "Verification plan should not be None when present"
         assert isinstance(verify.verification_type, str)
+        assert isinstance(verify.analysis_steps, list)
+        assert isinstance(verify.decision_rationale, str)
         assert isinstance(verify.test_scenarios, list)
         assert isinstance(verify.success_criteria, list)
         assert isinstance(verify.duration, int)
+        assert isinstance(verify.security_checks, list)
+        if verify.load_test_config is not None:
+            assert isinstance(verify.load_test_config.target_url, str)
         assert all(isinstance(scenario, str) for scenario in verify.test_scenarios)
         assert all(isinstance(criteria, str) for criteria in verify.success_criteria)
 

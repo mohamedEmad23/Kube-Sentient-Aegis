@@ -145,7 +145,7 @@
       "targets": [
         {
           "datasource": {"type": "prometheus", "uid": "prometheus"},
-          "expr": "aegis_shadow_clusters_active",
+          "expr": "aegis_shadow_environments_active",
           "refId": "A"
         }
       ],

@@ -216,6 +216,7 @@ ignore = [
     "EM102",   # f-string in exception
     "COM812",  # Missing trailing comma (conflicts with formatter)
     "ISC001",  # Implicit string concatenation (conflicts with formatter)
+    "PLC0415", # Import outside top-level (intentional for circular import avoidance)
 ]
 
 # Allow autofix for all enabled rules

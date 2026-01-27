@@ -60,6 +60,29 @@ make setup
 - ✓ Recommends optimal Ollama models for your VRAM
 - ✓ Verifies everything is working
 
+## 🎯 Quick Demo (5 minutes)
+
+### One-Command Demo (Recommended)
+
+```bash
+# 1. Start observability stack
+docker compose -f deploy/docker/docker-compose.yaml up -d
+
+# 2. Create a local Kind cluster and deploy the demo app
+./scripts/demo-setup.sh
+
+# 3. Analyze a resource with mock data (no cluster required)
+aegis analyze pod/demo-nginx --namespace default --mock
+
+# 4. View results
+# - Prometheus: http://localhost:9090
+# - Grafana:    http://localhost:3000 (admin / aegis123)
+
+# 5. Optional: create a real incident and analyze it
+kubectl apply -f examples/incidents/crashloop-missing-env.yaml
+aegis analyze pod/nginx-crashloop --namespace default
+```
+
 ### After Setup: Check Your GPU
 
 ```bash

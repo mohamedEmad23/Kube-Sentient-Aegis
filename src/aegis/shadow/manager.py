@@ -13,6 +13,8 @@ Features:
 """
 
 import asyncio
+import copy
+import re
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from enum import Enum
@@ -39,6 +41,7 @@ HTTP_NOT_FOUND = 404
 # Health thresholds
 SHADOW_HEALTH_PASS_THRESHOLD = 0.8  # 80% health threshold
 HEALTH_THRESHOLD = SHADOW_HEALTH_PASS_THRESHOLD  # Alias for backwards compatibility
+K8S_NAME_MAX_LENGTH = 63
 
 
 class ShadowStatus(str, Enum):
@@ -92,6 +95,9 @@ class ShadowManager:
         self.namespace_prefix = settings.shadow.namespace_prefix
         self.max_concurrent = settings.shadow.max_concurrent_shadows
         self.verification_timeout = settings.shadow.verification_timeout
+        self._namespace_prefix = self._sanitize_name(
+            self.namespace_prefix, allow_trailing_dash=True
+        )
 
         log.info(
             "shadow_manager_initialized",
@@ -105,7 +111,7 @@ class ShadowManager:
         return sum(
             1
             for env in self._environments.values()
-            if env.status in (ShadowStatus.READY, ShadowStatus.TESTING)
+            if env.status in (ShadowStatus.CREATING, ShadowStatus.READY, ShadowStatus.TESTING)
         )
 
     async def create_shadow(
@@ -137,12 +143,20 @@ class ShadowManager:
         # Generate shadow ID if not provided
         if not shadow_id:
             timestamp = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
-            shadow_id = f"shadow-{source_resource[:20]}-{timestamp}"
+            shadow_id = f"{source_resource}-{timestamp}"
 
-        shadow_namespace = f"{self.namespace_prefix}-{shadow_id}"
+        sanitized_id = self._sanitize_name(shadow_id)
+        shadow_namespace = self._build_shadow_namespace(sanitized_id)
+        if sanitized_id != shadow_id:
+            log.debug(
+                "shadow_id_sanitized",
+                original=shadow_id,
+                sanitized=sanitized_id,
+                namespace=shadow_namespace,
+            )
 
         env = ShadowEnvironment(
-            id=shadow_id,
+            id=sanitized_id,
             namespace=shadow_namespace,
             source_namespace=source_namespace,
             source_resource=source_resource,
@@ -170,7 +184,7 @@ class ShadowManager:
             env.status = ShadowStatus.READY
             log.info(
                 "shadow_created",
-                shadow_id=shadow_id,
+                shadow_id=sanitized_id,
                 namespace=shadow_namespace,
             )
 
@@ -181,6 +195,7 @@ class ShadowManager:
             env.status = ShadowStatus.ERROR
             env.error = str(e)
             log.exception("shadow_creation_failed")
+            await self._best_effort_cleanup(env)
             raise
 
         return env
@@ -220,10 +235,12 @@ class ShadowManager:
             fix_type = "rollback"
         elif "env" in changes:
             fix_type = "config_change"
+        elif "manifests" in changes:
+            fix_type = "patch"
 
         try:
             # Track verification duration
-            with shadow_verification_duration_seconds.labels().time():
+            with shadow_verification_duration_seconds.time():
                 # Apply changes to shadow environment
                 await self._apply_changes(env, changes)
                 env.logs.append(f"Applied changes: {list(changes.keys())}")
@@ -303,6 +320,40 @@ class ShadowManager:
     # Private helpers
     # ========================================================================
 
+    @staticmethod
+    def _sanitize_name(value: str, allow_trailing_dash: bool = False) -> str:
+        """Sanitize strings to valid DNS-1123 labels."""
+        trailing_dash = value.endswith("-")
+        sanitized = re.sub(r"[^a-z0-9-]+", "-", value.lower())
+        sanitized = re.sub(r"-{2,}", "-", sanitized).strip("-")
+        if not sanitized:
+            sanitized = "shadow"
+        if allow_trailing_dash and trailing_dash:
+            sanitized = f"{sanitized}-"
+        return sanitized
+
+    def _build_shadow_namespace(self, shadow_id: str) -> str:
+        """Build a shadow namespace within DNS-1123 limits."""
+        prefix = self._namespace_prefix
+        trimmed_id = shadow_id.lstrip("-")
+        max_id_len = K8S_NAME_MAX_LENGTH - len(prefix)
+        if max_id_len <= 0:
+            return prefix[:K8S_NAME_MAX_LENGTH].rstrip("-")
+        if len(trimmed_id) > max_id_len:
+            trimmed_id = trimmed_id[:max_id_len].rstrip("-")
+        return f"{prefix}{trimmed_id}"
+
+    async def _call_api(self, func: Any, *args: Any, **kwargs: Any) -> Any:
+        """Run blocking Kubernetes client calls in a thread."""
+        return await asyncio.to_thread(func, *args, **kwargs)
+
+    async def _best_effort_cleanup(self, env: ShadowEnvironment) -> None:
+        """Attempt cleanup after a failed shadow creation."""
+        try:
+            await self._delete_namespace(env.namespace)
+        except ApiException:
+            log.warning("shadow_cleanup_failed", shadow_id=env.id)
+
     async def _create_namespace(self, name: str) -> None:
         """Create namespace for shadow environment."""
         namespace = client.V1Namespace(
@@ -316,7 +367,7 @@ class ShadowManager:
         )
 
         try:
-            self._core_api.create_namespace(namespace)
+            await self._call_api(self._core_api.create_namespace, namespace)
         except ApiException as e:
             if e.status != HTTP_CONFLICT:  # Already exists is OK
                 raise
@@ -324,7 +375,7 @@ class ShadowManager:
     async def _delete_namespace(self, name: str) -> None:
         """Delete shadow namespace."""
         try:
-            self._core_api.delete_namespace(name)
+            await self._call_api(self._core_api.delete_namespace, name)
         except ApiException as e:
             if e.status != HTTP_NOT_FOUND:  # Not found is OK
                 raise
@@ -339,10 +390,15 @@ class ShadowManager:
         """Clone a resource to the shadow namespace."""
         if source_kind.lower() == "deployment":
             # Get source deployment
-            deployment = cast(
+            source_deployment = cast(
                 client.V1Deployment,
-                self._apps_api.read_namespaced_deployment(source_name, source_namespace),
+                await self._call_api(
+                    self._apps_api.read_namespaced_deployment,
+                    source_name,
+                    source_namespace,
+                ),
             )
+            deployment = copy.deepcopy(source_deployment)
 
             # Prepare for cloning
             if deployment.metadata is None:
@@ -351,40 +407,72 @@ class ShadowManager:
             deployment.metadata.resource_version = None
             deployment.metadata.uid = None
             deployment.metadata.creation_timestamp = None
+            deployment.metadata.managed_fields = None
+            deployment.metadata.owner_references = None
+            deployment.metadata.finalizers = None
+            deployment.metadata.generation = None
 
             # Add shadow label
             if not deployment.metadata.labels:
                 deployment.metadata.labels = {}
             deployment.metadata.labels["aegis.io/shadow"] = "true"
+            deployment.metadata.labels["aegis.io/source-namespace"] = source_namespace
+            deployment.metadata.labels["aegis.io/source-name"] = source_name
+            deployment.metadata.labels["aegis.io/source-kind"] = "Deployment"
 
             # Create in shadow namespace
-            self._apps_api.create_namespaced_deployment(target_namespace, deployment)
+            await self._call_api(
+                self._apps_api.create_namespaced_deployment,
+                target_namespace,
+                deployment,
+            )
 
         elif source_kind.lower() == "pod":
             # For standalone pods, create a deployment wrapper
             pod = cast(
                 client.V1Pod,
-                self._core_api.read_namespaced_pod(source_name, source_namespace),
+                await self._call_api(
+                    self._core_api.read_namespaced_pod,
+                    source_name,
+                    source_namespace,
+                ),
             )
+            pod_spec = copy.deepcopy(pod.spec)
+            if pod_spec and pod_spec.restart_policy and pod_spec.restart_policy != "Always":
+                pod_spec.restart_policy = "Always"
+
+            base_labels = pod.metadata.labels if pod.metadata and pod.metadata.labels else {}
+            base_labels = copy.deepcopy(base_labels)
+            base_labels.setdefault("app", source_name)
+            base_labels["aegis.io/shadow"] = "true"
 
             # Create deployment from pod spec
             deployment = client.V1Deployment(
                 metadata=client.V1ObjectMeta(
                     name=source_name,
                     namespace=target_namespace,
-                    labels={"aegis.io/shadow": "true"},
+                    labels={
+                        **base_labels,
+                        "aegis.io/source-namespace": source_namespace,
+                        "aegis.io/source-name": source_name,
+                        "aegis.io/source-kind": "Pod",
+                    },
                 ),
                 spec=client.V1DeploymentSpec(
                     replicas=1,
-                    selector=client.V1LabelSelector(match_labels={"app": source_name}),
+                    selector=client.V1LabelSelector(match_labels={"app": base_labels["app"]}),
                     template=client.V1PodTemplateSpec(
-                        metadata=client.V1ObjectMeta(labels={"app": source_name}),
-                        spec=pod.spec,
+                        metadata=client.V1ObjectMeta(labels=base_labels),
+                        spec=pod_spec,
                     ),
                 ),
             )
 
-            self._apps_api.create_namespaced_deployment(target_namespace, deployment)
+            await self._call_api(
+                self._apps_api.create_namespaced_deployment,
+                target_namespace,
+                deployment,
+            )
 
         else:
             log.warning(
@@ -395,33 +483,72 @@ class ShadowManager:
 
     async def _apply_changes(self, env: ShadowEnvironment, changes: dict[str, Any]) -> None:
         """Apply proposed changes to shadow environment."""
+        if not changes:
+            return
+
+        deployment = cast(
+            client.V1Deployment,
+            await self._call_api(
+                self._apps_api.read_namespaced_deployment,
+                env.source_resource,
+                env.namespace,
+            ),
+        )
+        container_name = changes.get("container") or changes.get("container_name")
+        if not container_name:
+            containers = (
+                deployment.spec.template.spec.containers
+                if deployment.spec and deployment.spec.template and deployment.spec.template.spec
+                else []
+            )
+            if containers:
+                container_name = containers[0].name
+
+        patch: dict[str, Any] = {"spec": {}}
+        template_patch: dict[str, Any] = {"spec": {}}
+        container_patch: dict[str, Any] = {}
+
         # Handle replica changes
         if "replicas" in changes:
-            try:
-                self._apps_api.patch_namespaced_deployment(
-                    env.source_resource,
-                    env.namespace,
-                    {"spec": {"replicas": changes["replicas"]}},
-                )
-            except ApiException as e:
-                log.warning("patch_failed", error=str(e))
+            patch["spec"]["replicas"] = changes["replicas"]
 
         # Handle image changes
         if "image" in changes:
-            try:
-                self._apps_api.patch_namespaced_deployment(
-                    env.source_resource,
-                    env.namespace,
-                    {
-                        "spec": {
-                            "template": {
-                                "spec": {"containers": [{"name": "app", "image": changes["image"]}]}
-                            }
-                        }
-                    },
+            if container_name:
+                container_patch["name"] = container_name
+                container_patch["image"] = changes["image"]
+            else:
+                log.warning(
+                    "shadow_patch_no_container", change="image", resource=env.source_resource
                 )
-            except ApiException as e:
-                log.warning("image_patch_failed", error=str(e))
+
+        # Handle environment variable changes
+        if "env" in changes and isinstance(changes["env"], dict):
+            env_updates = [{"name": key, "value": value} for key, value in changes["env"].items()]
+            if container_name:
+                container_patch["name"] = container_name
+                container_patch["env"] = env_updates
+            else:
+                log.warning("shadow_patch_no_container", change="env", resource=env.source_resource)
+
+        if container_patch:
+            template_patch["spec"]["containers"] = [container_patch]
+
+        if template_patch["spec"]:
+            patch["spec"]["template"] = template_patch
+
+        if not patch["spec"]:
+            return
+
+        try:
+            await self._call_api(
+                self._apps_api.patch_namespaced_deployment,
+                env.source_resource,
+                env.namespace,
+                patch,
+            )
+        except ApiException as e:
+            log.warning("shadow_patch_failed", error=str(e))
 
     async def _monitor_health(self, env: ShadowEnvironment, duration: int) -> float:
         """Monitor shadow environment health.
@@ -448,22 +575,24 @@ class ShadowManager:
         try:
             pods = cast(
                 client.V1PodList,
-                self._core_api.list_namespaced_pod(env.namespace),
+                await self._call_api(self._core_api.list_namespaced_pod, env.namespace),
             )
             if not pods.items:
                 return 0.0
 
             healthy = 0
             for pod in pods.items:
-                if pod.status and pod.status.phase == "Running":
-                    # Check container statuses
-                    ready = True
-                    for cs in pod.status.container_statuses or []:
-                        if not cs.ready:
-                            ready = False
-                            break
-                    if ready:
-                        healthy += 1
+                if not pod.status:
+                    continue
+                if pod.status.phase != "Running":
+                    continue
+                ready = True
+                for cs in pod.status.container_statuses or []:
+                    if not cs.ready:
+                        ready = False
+                        break
+                if ready:
+                    healthy += 1
 
             return healthy / len(pods.items)
 
