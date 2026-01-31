@@ -226,6 +226,7 @@ class ShadowManager:
         env.status = ShadowStatus.TESTING
         env.logs.append("Starting verification tests")
         duration = duration or self.verification_timeout
+        verification_start = datetime.now(UTC)
 
         # Determine fix type from changes
         fix_type = "unknown"
@@ -282,6 +283,48 @@ class ShadowManager:
                         )
                         return False
 
+                # ----------------------------------------------------------------
+                # Security gate: Falco runtime alerts (fail open on tool missing)
+                # ----------------------------------------------------------------
+                falco_result: dict[str, Any] | None = None
+                if settings.security.falco_enabled:
+                    from aegis.security.falco import check_falco_alerts
+
+                    env.logs.append(
+                        f"Running Falco runtime check (severity={settings.security.falco_severity})"
+                    )
+                    falco_result = await check_falco_alerts(
+                        namespace=env.namespace,
+                        since_timestamp=verification_start,
+                        severity_threshold=settings.security.falco_severity,
+                        falco_namespace=settings.security.falco_namespace,
+                        label_selector=settings.security.falco_label_selector,
+                    )
+
+                    if falco_result.get("skipped", False):
+                        env.logs.append(
+                            f"Falco check skipped: {falco_result.get('reason')}"
+                        )
+                    elif not falco_result.get("passed", True):
+                        env.status = ShadowStatus.FAILED
+                        env.test_results = {
+                            "passed": False,
+                            "timestamp": datetime.now(UTC).isoformat(),
+                            "trivy": trivy_result,
+                            "falco": falco_result,
+                        }
+                        env.logs.append(
+                            f"Falco blocked: {falco_result.get('alert_count', 0)} alert(s) detected"
+                        )
+                        log.warning(
+                            "shadow_verification_blocked_by_falco",
+                            shadow_id=shadow_id,
+                            namespace=env.namespace,
+                            alert_count=falco_result.get("alert_count"),
+                            summary=falco_result.get("summary"),
+                        )
+                        return False
+
                 # Monitor health for specified duration
                 health_score = await self._monitor_health(env, duration)
                 env.health_score = health_score
@@ -296,6 +339,7 @@ class ShadowManager:
                     "passed": passed,
                     "timestamp": datetime.now(UTC).isoformat(),
                     **({"trivy": trivy_result} if trivy_result is not None else {}),
+                    **({"falco": falco_result} if falco_result is not None else {}),
                 }
 
             # Track verification result
