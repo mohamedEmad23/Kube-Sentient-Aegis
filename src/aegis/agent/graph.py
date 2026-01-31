@@ -29,7 +29,7 @@ if TYPE_CHECKING:
 log = get_logger(__name__)
 
 
-async def _run_kubectl(args: list[str], timeout: int) -> str | None:
+async def _run_kubectl(args: list[str], timeout_seconds: float) -> str | None:
     """Run kubectl command and return stdout if successful."""
     if not shutil.which("kubectl"):
         return None
@@ -41,7 +41,8 @@ async def _run_kubectl(args: list[str], timeout: int) -> str | None:
         stderr=asyncio.subprocess.PIPE,
     )
     try:
-        stdout, _stderr = await asyncio.wait_for(process.communicate(), timeout=timeout)
+        async with asyncio.timeout(timeout_seconds):
+            stdout, _stderr = await process.communicate()
     except TimeoutError:
         process.kill()
         await process.wait()
@@ -57,12 +58,12 @@ async def _fetch_kubectl_context(
     resource_type: str,
     resource_name: str,
     namespace: str,
-    timeout: int,
+    timeout_seconds: float,
 ) -> dict[str, str | None]:
     """Fetch kubectl logs/describe/events to enrich RCA/solution prompts."""
     describe = await _run_kubectl(
         ["-n", namespace, "describe", resource_type, resource_name],
-        timeout=timeout,
+        timeout_seconds=timeout_seconds,
     )
 
     events = await _run_kubectl(
@@ -75,7 +76,7 @@ async def _fetch_kubectl_context(
             f"involvedObject.name={resource_name}",
             "--sort-by=.lastTimestamp",
         ],
-        timeout=timeout,
+        timeout_seconds=timeout_seconds,
     )
 
     logs = None
@@ -86,14 +87,14 @@ async def _fetch_kubectl_context(
     else:
         selector_logs = await _run_kubectl(
             ["-n", namespace, "get", "pods", "-l", f"app={resource_name}", "-o", "name"],
-            timeout=timeout,
+            timeout_seconds=timeout_seconds,
         )
         if selector_logs:
             pod_name = selector_logs.splitlines()[0].split("/")[-1]
         else:
             all_pods = await _run_kubectl(
                 ["-n", namespace, "get", "pods", "-o", "name"],
-                timeout=timeout,
+                timeout_seconds=timeout_seconds,
             )
             if all_pods:
                 for item in all_pods.splitlines():
@@ -105,7 +106,7 @@ async def _fetch_kubectl_context(
     if pod_name:
         logs = await _run_kubectl(
             ["-n", namespace, "logs", pod_name, "--tail=200"],
-            timeout=timeout,
+            timeout_seconds=timeout_seconds,
         )
 
     return {"logs": logs, "describe": describe, "events": events}
@@ -245,7 +246,7 @@ async def analyze_incident(
             resource_type=resource_type,
             resource_name=resource_name,
             namespace=namespace,
-            timeout=settings.kubernetes.api_timeout,
+            timeout_seconds=settings.kubernetes.api_timeout,
         )
         state["kubectl_logs"] = context.get("logs")
         state["kubectl_describe"] = context.get("describe")

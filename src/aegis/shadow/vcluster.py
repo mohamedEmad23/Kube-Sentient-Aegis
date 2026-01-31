@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
 import shutil
-import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -35,16 +35,20 @@ class VClusterManager:
 
     def _run(self, args: list[str]) -> VClusterResult:
         """Run vcluster command and return result."""
-        result = subprocess.run(
-            args,
-            capture_output=True,
-            text=True,
-            check=False,
+        return asyncio.run(self._run_async(args))
+
+    async def _run_async(self, args: list[str]) -> VClusterResult:
+        """Run vcluster command asynchronously and return result."""
+        process = await asyncio.create_subprocess_exec(
+            *args,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
         )
+        stdout, stderr = await process.communicate()
         return VClusterResult(
-            stdout=result.stdout.strip(),
-            stderr=result.stderr.strip(),
-            returncode=result.returncode,
+            stdout=stdout.decode(errors="replace").strip() if stdout else "",
+            stderr=stderr.decode(errors="replace").strip() if stderr else "",
+            returncode=process.returncode or 0,
         )
 
     def create(self, name: str, namespace: str) -> VClusterResult:

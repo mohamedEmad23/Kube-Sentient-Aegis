@@ -18,7 +18,6 @@ import copy
 import re
 import shlex
 import shutil
-import subprocess
 import tempfile
 import time
 from collections.abc import Iterable
@@ -57,12 +56,17 @@ HTTP_NOT_FOUND = 404
 SHADOW_HEALTH_PASS_THRESHOLD = 0.8  # 80% health threshold
 HEALTH_THRESHOLD = SHADOW_HEALTH_PASS_THRESHOLD  # Alias for backwards compatibility
 K8S_NAME_MAX_LENGTH = 63
-VCLUSTER_KUBECONFIG_SECRET = "vc-shadow-kubeconfig"
+DEFAULT_HTTP_PORT = 80
+VCLUSTER_KUBECONFIG_NAME = "vc-shadow-kubeconfig"
 SMOKE_TEST_IMAGE = "curlimages/curl:8.5.0"
 LOAD_TEST_IMAGE = "locustio/locust:2.42.6"
 DEFAULT_SMOKE_PATHS = ["/health", "/ready", "/healthz", "/readyz"]
 SMOKE_TEST_TIMEOUT_SECONDS = 120
 JOB_POLL_INTERVAL_SECONDS = 2
+KUBECTL_SKIP_ARGS = {"-n", "--namespace", "--context", "--kubeconfig"}
+KUBECTL_MIN_ARGS = 2
+KUBECTL_SET_MIN_ARGS = 3
+KUBECTL_SET_IMAGE_MIN_ARGS = 4
 
 
 class ShadowStatus(str, Enum):
@@ -223,24 +227,31 @@ class ShadowManager:
         self._environments[env.id] = env
         env.logs.append(f"Creating shadow environment: {env.id}")
 
-        try:
-            if self.runtime != SandBoxRuntime.VCLUSTER.value:
-                msg = (
-                    f"Shadow runtime '{self.runtime}' is not supported for real cluster "
-                    "verification. Set SHADOW_RUNTIME=vcluster."
-                )
-                log.error(msg)
-                raise RuntimeError(msg)
+        if self.runtime != SandBoxRuntime.VCLUSTER.value:
+            msg = (
+                f"Shadow runtime '{self.runtime}' is not supported for real cluster "
+                "verification. Set SHADOW_RUNTIME=vcluster."
+            )
+            env.status = ShadowStatus.ERROR
+            env.error = msg
+            log.error(msg)
+            await self._best_effort_cleanup(env)
+            raise RuntimeError(msg)
 
+        if not self._vcluster_manager.is_installed():
+            msg = "vcluster CLI not installed. Install vcluster to use shadow runtime."
+            env.status = ShadowStatus.ERROR
+            env.error = msg
+            log.error(msg)
+            await self._best_effort_cleanup(env)
+            raise RuntimeError(msg)
+
+        try:
             # Create host namespace for vCluster
             await self._create_namespace(shadow_namespace, core_api=self._core_api)
             env.logs.append(f"Host namespace {shadow_namespace} created")
 
             # Create vCluster
-            if not self._vcluster_manager.is_installed():
-                raise RuntimeError(
-                    "vcluster CLI not installed. Install vcluster to use shadow runtime."
-                )
             await self._call_api(
                 self._vcluster_manager.create,
                 env.id,
@@ -553,7 +564,7 @@ class ShadowManager:
             kubeconfig = await self._call_api(
                 self._vcluster_manager.get_kubeconfig, name, namespace
             )
-        except Exception as e:
+        except RuntimeError as e:
             log.warning(
                 "vcluster_kubeconfig_cli_failed",
                 shadow=name,
@@ -573,13 +584,13 @@ class ShadowManager:
                 client.V1Secret,
                 await self._call_api(
                     self._core_api.read_namespaced_secret,
-                    VCLUSTER_KUBECONFIG_SECRET,
+                    VCLUSTER_KUBECONFIG_NAME,
                     namespace,
                 ),
             )
         except ApiException as e:
             msg = f"Failed to read vCluster kubeconfig secret: {e}"
-            log.error(msg)
+            log.exception("vcluster_kubeconfig_secret_read_failed", error=str(e))
             raise RuntimeError(msg) from e
 
         data = secret.data or {}
@@ -609,8 +620,8 @@ class ShadowManager:
         if clients:
             try:
                 clients.api_client.close()
-            except Exception:
-                log.debug("shadow_client_close_failed", shadow_id=shadow_id)
+            except (OSError, RuntimeError) as exc:
+                log.debug("shadow_client_close_failed", shadow_id=shadow_id, error=str(exc))
 
     async def _best_effort_cleanup(self, env: ShadowEnvironment) -> None:
         """Attempt cleanup after a failed shadow creation."""
@@ -865,14 +876,7 @@ class ShadowManager:
 
         # Normalize kubectl command changes into structured patches
         command_changes = self._extract_command_changes(changes.get("commands", []), env)
-        if command_changes:
-            merged_env = {**changes.get("env", {}), **command_changes.get("env", {})}
-            if merged_env:
-                changes["env"] = merged_env
-            if "replicas" in command_changes and "replicas" not in changes:
-                changes["replicas"] = command_changes["replicas"]
-            if "image" in command_changes and "image" not in changes:
-                changes["image"] = command_changes["image"]
+        self._merge_command_changes(changes, command_changes)
 
         deployment = cast(
             client.V1Deployment,
@@ -882,50 +886,13 @@ class ShadowManager:
                 env.namespace,
             ),
         )
-        container_name = changes.get("container") or changes.get("container_name")
-        if not container_name:
-            containers = (
-                deployment.spec.template.spec.containers
-                if deployment.spec and deployment.spec.template and deployment.spec.template.spec
-                else []
-            )
-            if containers:
-                container_name = containers[0].name
-
-        patch: dict[str, Any] = {"spec": {}}
-        template_patch: dict[str, Any] = {"spec": {}}
-        container_patch: dict[str, Any] = {}
-
-        # Handle replica changes
-        if "replicas" in changes:
-            patch["spec"]["replicas"] = changes["replicas"]
-
-        # Handle image changes
-        if "image" in changes:
-            if container_name:
-                container_patch["name"] = container_name
-                container_patch["image"] = changes["image"]
-            else:
-                log.warning(
-                    "shadow_patch_no_container", change="image", resource=env.source_resource
-                )
-
-        # Handle environment variable changes
-        if "env" in changes and isinstance(changes["env"], dict):
-            env_updates = [{"name": key, "value": value} for key, value in changes["env"].items()]
-            if container_name:
-                container_patch["name"] = container_name
-                container_patch["env"] = env_updates
-            else:
-                log.warning("shadow_patch_no_container", change="env", resource=env.source_resource)
-
-        if container_patch:
-            template_patch["spec"]["containers"] = [container_patch]
-
-        if template_patch["spec"]:
-            patch["spec"]["template"] = template_patch
-
-        if not patch["spec"]:
+        container_name = self._resolve_container_name(deployment, changes)
+        patch = self._build_deployment_patch(
+            changes=changes,
+            container_name=container_name,
+            resource_name=env.source_resource,
+        )
+        if not patch:
             return
 
         try:
@@ -938,6 +905,78 @@ class ShadowManager:
         except ApiException as e:
             log.warning("shadow_patch_failed", error=str(e))
 
+    @staticmethod
+    def _merge_command_changes(
+        changes: dict[str, Any],
+        command_changes: dict[str, Any],
+    ) -> None:
+        """Merge parsed kubectl command changes into the change set."""
+        if not command_changes:
+            return
+        merged_env = {**changes.get("env", {}), **command_changes.get("env", {})}
+        if merged_env:
+            changes["env"] = merged_env
+        for key in ("replicas", "image", "container"):
+            if key in command_changes and key not in changes:
+                changes[key] = command_changes[key]
+
+    @staticmethod
+    def _resolve_container_name(
+        deployment: client.V1Deployment,
+        changes: dict[str, Any],
+    ) -> str | None:
+        """Pick target container name for patching."""
+        container_name = changes.get("container") or changes.get("container_name")
+        if isinstance(container_name, str) and container_name:
+            return container_name
+
+        containers = (
+            deployment.spec.template.spec.containers
+            if deployment.spec and deployment.spec.template and deployment.spec.template.spec
+            else []
+        )
+        return containers[0].name if containers else None
+
+    def _build_deployment_patch(
+        self,
+        *,
+        changes: dict[str, Any],
+        container_name: str | None,
+        resource_name: str,
+    ) -> dict[str, Any] | None:
+        """Build a deployment patch for replicas, image, and env updates."""
+        patch: dict[str, Any] = {"spec": {}}
+        template_patch: dict[str, Any] = {"spec": {}}
+        container_patch: dict[str, Any] = {}
+
+        if "replicas" in changes:
+            patch["spec"]["replicas"] = changes["replicas"]
+
+        if "image" in changes:
+            if container_name:
+                container_patch["name"] = container_name
+                container_patch["image"] = changes["image"]
+            else:
+                log.warning("shadow_patch_no_container", change="image", resource=resource_name)
+
+        if "env" in changes and isinstance(changes["env"], dict):
+            env_updates = [{"name": key, "value": value} for key, value in changes["env"].items()]
+            if container_name:
+                container_patch["name"] = container_name
+                container_patch["env"] = env_updates
+            else:
+                log.warning("shadow_patch_no_container", change="env", resource=resource_name)
+
+        if container_patch:
+            template_patch["spec"]["containers"] = [container_patch]
+
+        if template_patch["spec"]:
+            patch["spec"]["template"] = template_patch
+
+        if not patch["spec"]:
+            return None
+        return patch
+
     async def _apply_manifest_bundle(
         self,
         env: ShadowEnvironment,
@@ -947,9 +986,11 @@ class ShadowManager:
         if not env.kubeconfig_path:
             log.warning("shadow_manifest_missing_kubeconfig", shadow_id=env.id)
             return
-        if not shutil.which("kubectl"):
+        kubectl_path = shutil.which("kubectl")
+        if not kubectl_path:
             log.warning("shadow_manifest_kubectl_missing", shadow_id=env.id)
             return
+        kubeconfig_path = env.kubeconfig_path
 
         if isinstance(manifests, dict):
             manifest_blob = "\n---\n".join(manifests.values())
@@ -961,31 +1002,26 @@ class ShadowManager:
         if not manifest_blob.strip():
             return
 
-        def _run_kubectl() -> subprocess.CompletedProcess[str]:
-            return subprocess.run(
-                [
-                    "kubectl",
-                    "--kubeconfig",
-                    env.kubeconfig_path,
-                    "apply",
-                    "-f",
-                    "-",
-                    "-n",
-                    env.namespace,
-                ],
-                input=manifest_blob,
-                text=True,
-                capture_output=True,
-                check=False,
-            )
-
-        result = await self._call_api(_run_kubectl)
-        if result.returncode != 0:
-            stderr = (result.stderr or "").strip()
+        process = await asyncio.create_subprocess_exec(
+            kubectl_path,
+            "--kubeconfig",
+            kubeconfig_path,
+            "apply",
+            "-f",
+            "-",
+            "-n",
+            env.namespace,
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, stderr = await process.communicate(input=manifest_blob.encode())
+        if process.returncode != 0:
+            stderr_text = stderr.decode(errors="replace").strip() if stderr else ""
             log.warning(
                 "shadow_manifest_apply_failed",
                 shadow_id=env.id,
-                stderr=stderr[:500],
+                stderr=stderr_text[:500],
             )
         else:
             log.info("shadow_manifest_applied", shadow_id=env.id)
@@ -1009,59 +1045,106 @@ class ShadowManager:
             if not parts or parts[0] != "kubectl":
                 continue
 
-            cleaned: list[str] = []
-            skip_next = False
-            for part in parts[1:]:
-                if skip_next:
-                    skip_next = False
-                    continue
-                if part in ("-n", "--namespace", "--context", "--kubeconfig"):
-                    skip_next = True
-                    continue
-                cleaned.append(part)
-
-            if len(cleaned) < 2:
+            cleaned = self._clean_kubectl_args(parts)
+            if len(cleaned) < KUBECTL_MIN_ARGS:
                 continue
 
-            action = cleaned[0]
-            if action == "set" and len(cleaned) >= 3:
-                subcommand = cleaned[1]
-                resource = cleaned[2]
-                resource_name = resource.split("/", 1)[-1]
-                if resource_name != env.source_resource:
-                    continue
-
-                if subcommand == "env":
-                    env_pairs = cleaned[3:]
-                    if env_pairs:
-                        env_updates = extracted.setdefault("env", {})
-                        for pair in env_pairs:
-                            if "=" not in pair:
-                                continue
-                            key, value = pair.split("=", 1)
-                            env_updates[key] = value
-                elif subcommand == "image" and len(cleaned) >= 4:
-                    image_pair = cleaned[3]
-                    if "=" in image_pair:
-                        container, image = image_pair.split("=", 1)
-                        extracted["image"] = image
-                        extracted["container"] = container
-
-            if action == "scale" and len(cleaned) >= 2:
-                resource = cleaned[1]
-                resource_name = resource.split("/", 1)[-1]
-                if resource_name != env.source_resource:
-                    continue
-                replicas = None
-                for idx, part in enumerate(cleaned[2:], start=2):
-                    if part.startswith("--replicas="):
-                        replicas = part.split("=", 1)[-1]
-                    elif part == "--replicas" and idx + 1 < len(cleaned):
-                        replicas = cleaned[idx + 1]
-                if replicas and replicas.isdigit():
-                    extracted["replicas"] = int(replicas)
+            self._apply_kubectl_action(cleaned, env, extracted)
 
         return extracted
+
+    @staticmethod
+    def _clean_kubectl_args(parts: list[str]) -> list[str]:
+        """Remove global kubeconfig/namespace/context args from kubectl commands."""
+        cleaned: list[str] = []
+        skip_next = False
+        for part in parts[1:]:
+            if skip_next:
+                skip_next = False
+                continue
+            if part in KUBECTL_SKIP_ARGS:
+                skip_next = True
+                continue
+            cleaned.append(part)
+        return cleaned
+
+    def _apply_kubectl_action(
+        self,
+        cleaned: list[str],
+        env: ShadowEnvironment,
+        extracted: dict[str, Any],
+    ) -> None:
+        action = cleaned[0]
+        if action == "set":
+            self._apply_kubectl_set(cleaned, env, extracted)
+        elif action == "scale":
+            self._apply_kubectl_scale(cleaned, env, extracted)
+
+    def _apply_kubectl_set(
+        self,
+        cleaned: list[str],
+        env: ShadowEnvironment,
+        extracted: dict[str, Any],
+    ) -> None:
+        if len(cleaned) < KUBECTL_SET_MIN_ARGS:
+            return
+        subcommand = cleaned[1]
+        resource_name = cleaned[2].split("/", 1)[-1]
+        if resource_name != env.source_resource:
+            return
+
+        if subcommand == "env":
+            self._apply_kubectl_set_env(cleaned[KUBECTL_SET_MIN_ARGS:], extracted)
+        elif subcommand == "image":
+            self._apply_kubectl_set_image(cleaned, extracted)
+
+    @staticmethod
+    def _apply_kubectl_set_env(env_pairs: list[str], extracted: dict[str, Any]) -> None:
+        if not env_pairs:
+            return
+        env_updates = extracted.setdefault("env", {})
+        for pair in env_pairs:
+            if "=" not in pair:
+                continue
+            key, value = pair.split("=", 1)
+            env_updates[key] = value
+
+    @staticmethod
+    def _apply_kubectl_set_image(cleaned: list[str], extracted: dict[str, Any]) -> None:
+        if len(cleaned) < KUBECTL_SET_IMAGE_MIN_ARGS:
+            return
+        image_pair = cleaned[KUBECTL_SET_MIN_ARGS]
+        if "=" in image_pair:
+            container, image = image_pair.split("=", 1)
+            extracted["image"] = image
+            extracted["container"] = container
+
+    def _apply_kubectl_scale(
+        self,
+        cleaned: list[str],
+        env: ShadowEnvironment,
+        extracted: dict[str, Any],
+    ) -> None:
+        if len(cleaned) < KUBECTL_MIN_ARGS:
+            return
+        resource_name = cleaned[1].split("/", 1)[-1]
+        if resource_name != env.source_resource:
+            return
+
+        replicas = self._parse_kubectl_replicas(cleaned[KUBECTL_MIN_ARGS:])
+        if replicas is not None:
+            extracted["replicas"] = replicas
+
+    @staticmethod
+    def _parse_kubectl_replicas(parts: list[str]) -> int | None:
+        for idx, part in enumerate(parts):
+            if part.startswith("--replicas="):
+                value = part.split("=", 1)[-1]
+                return int(value) if value.isdigit() else None
+            if part == "--replicas" and idx + 1 < len(parts):
+                value = parts[idx + 1]
+                return int(value) if value.isdigit() else None
+        return None
 
     async def _wait_for_rollout(
         self,
@@ -1110,7 +1193,7 @@ class ShadowManager:
                 env.namespace,
             ),
         )
-        pod_labels = {}
+        pod_labels: dict[str, str] = {}
         if deployment.spec and deployment.spec.template and deployment.spec.template.metadata:
             pod_labels = deployment.spec.template.metadata.labels or {}
 
@@ -1144,13 +1227,27 @@ class ShadowManager:
     @staticmethod
     def _select_service_port(ports: list[client.V1ServicePort]) -> int:
         """Pick the most likely HTTP service port."""
+
+        def _port_value(port: client.V1ServicePort) -> int | None:
+            if port.port is None:
+                return None
+            return int(port.port)
+
         for port in ports:
+            value = _port_value(port)
+            if value is None:
+                continue
             if port.name and "http" in port.name:
-                return port.port
+                return value
         for port in ports:
-            if port.port == 80:
-                return port.port
-        return ports[0].port
+            value = _port_value(port)
+            if value == DEFAULT_HTTP_PORT:
+                return value
+        for port in ports:
+            value = _port_value(port)
+            if value is not None:
+                return value
+        raise RuntimeError("Service ports missing values")
 
     @staticmethod
     def _extract_probe_paths(deployment: client.V1Deployment) -> list[str]:
@@ -1250,7 +1347,7 @@ class ShadowManager:
                 job_name, env.namespace, batch_api, SMOKE_TEST_TIMEOUT_SECONDS
             )
             logs = await self._get_job_logs(job_name, env.namespace, core_api)
-        except Exception as exc:
+        except (ApiException, RuntimeError) as exc:
             logs = f"Smoke test error: {exc}"
             log.warning("shadow_smoke_test_failed", shadow_id=env.id, error=str(exc))
         finally:
@@ -1357,7 +1454,7 @@ class ShadowManager:
                 passed = job_ok and success_rate >= settings.loadtest.success_threshold
             else:
                 passed = job_ok
-        except Exception as exc:
+        except (ApiException, RuntimeError) as exc:
             logs = f"Load test error: {exc}"
             log.warning("shadow_load_test_failed", shadow_id=env.id, error=str(exc))
         finally:
@@ -1429,9 +1526,10 @@ class ShadowManager:
         if not pod_name:
             return ""
         try:
-            return await self._call_api(core_api.read_namespaced_pod_log, pod_name, namespace)
+            logs = await self._call_api(core_api.read_namespaced_pod_log, pod_name, namespace)
         except ApiException:
             return ""
+        return str(logs) if logs is not None else ""
 
     @staticmethod
     def _parse_locust_failure_rate(logs: str) -> float | None:

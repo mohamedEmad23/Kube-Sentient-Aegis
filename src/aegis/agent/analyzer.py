@@ -12,7 +12,7 @@ import asyncio
 import json
 import os
 import shutil
-from typing import Any
+from typing import Any, cast
 
 from aegis.agent.state import K8sGPTAnalysis
 from aegis.config.settings import settings
@@ -126,7 +126,10 @@ class K8sGPTAnalyzer:
                 )
                 raise RuntimeError(f"K8sGPT execution failed (exit {process.returncode})") from None
 
-            return json.loads(stdout.decode())
+            data = json.loads(stdout.decode())
+            if not isinstance(data, dict):
+                raise TypeError("K8sGPT returned non-object JSON payload") from None
+            return cast(dict[str, Any], data)
 
         try:
             raw_output = await _run_k8sgpt(filter_name)
@@ -137,26 +140,23 @@ class K8sGPTAnalyzer:
 
             def _matches_resource(result: dict[str, Any]) -> bool:
                 name = result.get("name") or ""
-                if name == resource_name or name == f"{namespace}/{resource_name}":
+                if name in {resource_name, f"{namespace}/{resource_name}"}:
                     return True
-                if name.startswith(f"{resource_name}-") or name.startswith(
-                    f"{namespace}/{resource_name}-"
-                ):
+                if name.startswith((f"{resource_name}-", f"{namespace}/{resource_name}-")):
                     return True
 
                 parent = result.get("parentObject") or result.get("parent_object") or {}
-                parent_name = parent.get("name")
-                parent_ns = parent.get("namespace")
-                if parent_name == resource_name and (parent_ns in (None, namespace)):
+                parent_name = parent.get("name") if isinstance(parent, dict) else None
+                parent_ns = parent.get("namespace") if isinstance(parent, dict) else None
+                parent_name_str = parent_name if isinstance(parent_name, str) else None
+                parent_ns_str = parent_ns if isinstance(parent_ns, str) else None
+                if parent_name_str == resource_name and parent_ns_str in (None, namespace):
                     return True
-                if (
-                    parent_name
-                    and parent_ns
-                    and f"{parent_ns}/{parent_name}" == f"{namespace}/{resource_name}"
-                ):
-                    return True
-
-                return False
+                return (
+                    parent_name_str is not None
+                    and parent_ns_str is not None
+                    and f"{parent_ns_str}/{parent_name_str}" == f"{namespace}/{resource_name}"
+                )
 
             filtered_results = [r for r in results_list if _matches_resource(r)]
 
