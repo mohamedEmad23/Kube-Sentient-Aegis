@@ -1,0 +1,235 @@
+[
+    {
+        "Id": "480960e87a7ce90a97402b1a27038df1aecffbfc05d0737187b1f0d9f4de5f4c",
+        "Created": "2026-01-30T00:49:14.278971568Z",
+        "Path": "/usr/local/bin/entrypoint",
+        "Args": [
+            "/sbin/init"
+        ],
+        "State": {
+            "Status": "running",
+            "Running": true,
+            "Paused": false,
+            "Restarting": false,
+            "OOMKilled": false,
+            "Dead": false,
+            "Pid": 3047089,
+            "ExitCode": 0,
+            "Error": "",
+            "StartedAt": "2026-01-30T00:49:17.776364838Z",
+            "FinishedAt": "0001-01-01T00:00:00Z"
+        },
+        "Image": "sha256:9319cf209ac58c5f091c9cb183fdd8784e753cfb5b1b3cb6692b26abd8d4efac",
+        "ResolvConfPath": "/home/mohammed-emad/.local/share/docker/containers/480960e87a7ce90a97402b1a27038df1aecffbfc05d0737187b1f0d9f4de5f4c/resolv.conf",
+        "HostnamePath": "/home/mohammed-emad/.local/share/docker/containers/480960e87a7ce90a97402b1a27038df1aecffbfc05d0737187b1f0d9f4de5f4c/hostname",
+        "HostsPath": "/home/mohammed-emad/.local/share/docker/containers/480960e87a7ce90a97402b1a27038df1aecffbfc05d0737187b1f0d9f4de5f4c/hosts",
+        "LogPath": "/home/mohammed-emad/.local/share/docker/containers/480960e87a7ce90a97402b1a27038df1aecffbfc05d0737187b1f0d9f4de5f4c/480960e87a7ce90a97402b1a27038df1aecffbfc05d0737187b1f0d9f4de5f4c-json.log",
+        "Name": "/aegis-demo-worker",
+        "RestartCount": 0,
+        "Driver": "overlay2",
+        "Platform": "linux",
+        "MountLabel": "",
+        "ProcessLabel": "",
+        "AppArmorProfile": "",
+        "ExecIDs": [
+            "a7d79c0546e9a2e266d39174610254947c61e1d6919a2e6ec826a860a1b80352"
+        ],
+        "HostConfig": {
+            "Binds": [
+                "/lib/modules:/lib/modules:ro"
+            ],
+            "ContainerIDFile": "",
+            "LogConfig": {
+                "Type": "json-file",
+                "Config": {}
+            },
+            "NetworkMode": "kind",
+            "PortBindings": {},
+            "RestartPolicy": {
+                "Name": "on-failure",
+                "MaximumRetryCount": 1
+            },
+            "AutoRemove": false,
+            "VolumeDriver": "",
+            "VolumesFrom": null,
+            "ConsoleSize": [
+                0,
+                0
+            ],
+            "CapAdd": null,
+            "CapDrop": null,
+            "CgroupnsMode": "private",
+            "Dns": null,
+            "DnsOptions": [],
+            "DnsSearch": [],
+            "ExtraHosts": null,
+            "GroupAdd": null,
+            "IpcMode": "private",
+            "Cgroup": "",
+            "Links": null,
+            "OomScoreAdj": 200,
+            "PidMode": "",
+            "Privileged": true,
+            "PublishAllPorts": false,
+            "ReadonlyRootfs": false,
+            "SecurityOpt": [
+                "seccomp=unconfined",
+                "apparmor=unconfined",
+                "label=disable"
+            ],
+            "Tmpfs": {
+                "/run": "",
+                "/tmp": ""
+            },
+            "UTSMode": "",
+            "UsernsMode": "",
+            "ShmSize": 67108864,
+            "Runtime": "runc",
+            "Isolation": "",
+            "CpuShares": 0,
+            "Memory": 0,
+            "NanoCpus": 0,
+            "CgroupParent": "",
+            "BlkioWeight": 0,
+            "BlkioWeightDevice": [],
+            "BlkioDeviceReadBps": [],
+            "BlkioDeviceWriteBps": [],
+            "BlkioDeviceReadIOps": [],
+            "BlkioDeviceWriteIOps": [],
+            "CpuPeriod": 0,
+            "CpuQuota": 0,
+            "CpuRealtimePeriod": 0,
+            "CpuRealtimeRuntime": 0,
+            "CpusetCpus": "",
+            "CpusetMems": "",
+            "Devices": [
+                {
+                    "PathOnHost": "/dev/fuse",
+                    "PathInContainer": "/dev/fuse",
+                    "CgroupPermissions": "rwm"
+                }
+            ],
+            "DeviceCgroupRules": null,
+            "DeviceRequests": null,
+            "MemoryReservation": 0,
+            "MemorySwap": 0,
+            "MemorySwappiness": null,
+            "OomKillDisable": null,
+            "PidsLimit": null,
+            "Ulimits": [],
+            "CpuCount": 0,
+            "CpuPercent": 0,
+            "IOMaximumIOps": 0,
+            "IOMaximumBandwidth": 0,
+            "MaskedPaths": null,
+            "ReadonlyPaths": null,
+            "Init": false
+        },
+        "GraphDriver": {
+            "Data": {
+                "ID": "480960e87a7ce90a97402b1a27038df1aecffbfc05d0737187b1f0d9f4de5f4c",
+                "LowerDir": "/home/mohammed-emad/.local/share/docker/overlay2/cfeb6feca61d6753af2c79bdba14b22007feb25cbeb5f95e33421d1ebba8597a-init/diff:/home/mohammed-emad/.local/share/docker/overlay2/7b371c37ee37bfcd69e45174dd0937d922dc831973280950010878950c767ba3/diff:/home/mohammed-emad/.local/share/docker/overlay2/2d0e6e65e7f6d620df67b03923e7ca8de7e7b8652ac8c343c16f902ab8139b81/diff",
+                "MergedDir": "/home/mohammed-emad/.local/share/docker/overlay2/cfeb6feca61d6753af2c79bdba14b22007feb25cbeb5f95e33421d1ebba8597a/merged",
+                "UpperDir": "/home/mohammed-emad/.local/share/docker/overlay2/cfeb6feca61d6753af2c79bdba14b22007feb25cbeb5f95e33421d1ebba8597a/diff",
+                "WorkDir": "/home/mohammed-emad/.local/share/docker/overlay2/cfeb6feca61d6753af2c79bdba14b22007feb25cbeb5f95e33421d1ebba8597a/work"
+            },
+            "Name": "overlay2"
+        },
+        "Mounts": [
+            {
+                "Type": "bind",
+                "Source": "/lib/modules",
+                "Destination": "/lib/modules",
+                "Mode": "ro",
+                "RW": false,
+                "Propagation": "rprivate"
+            },
+            {
+                "Type": "volume",
+                "Name": "a607ba2a0324cc8cf2451e7ca1c962b520c085bd924477962d37b21703f12fb4",
+                "Source": "/home/mohammed-emad/.local/share/docker/volumes/a607ba2a0324cc8cf2451e7ca1c962b520c085bd924477962d37b21703f12fb4/_data",
+                "Destination": "/var",
+                "Driver": "local",
+                "Mode": "",
+                "RW": true,
+                "Propagation": ""
+            }
+        ],
+        "Config": {
+            "Hostname": "aegis-demo-worker",
+            "Domainname": "",
+            "User": "",
+            "AttachStdin": false,
+            "AttachStdout": false,
+            "AttachStderr": false,
+            "Tty": true,
+            "OpenStdin": false,
+            "StdinOnce": false,
+            "Env": [
+                "KIND_EXPERIMENTAL_CONTAINERD_SNAPSHOTTER",
+                "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+                "container=docker",
+                "HTTP_PROXY=",
+                "HTTPS_PROXY=",
+                "NO_PROXY="
+            ],
+            "Cmd": null,
+            "Image": "kindest/node:v1.30.0",
+            "Volumes": {
+                "/var": {}
+            },
+            "WorkingDir": "/",
+            "Entrypoint": [
+                "/usr/local/bin/entrypoint",
+                "/sbin/init"
+            ],
+            "OnBuild": null,
+            "Labels": {
+                "io.x-k8s.kind.cluster": "aegis-demo",
+                "io.x-k8s.kind.role": "worker"
+            },
+            "StopSignal": "SIGRTMIN+3"
+        },
+        "NetworkSettings": {
+            "Bridge": "",
+            "SandboxID": "514cf9201c3a3bac0d9bdc40d5bbebf7283d1a68c07b5251816553a7bdfa227b",
+            "SandboxKey": "/run/user/1000/docker/netns/514cf9201c3a",
+            "Ports": {},
+            "HairpinMode": false,
+            "LinkLocalIPv6Address": "",
+            "LinkLocalIPv6PrefixLen": 0,
+            "SecondaryIPAddresses": null,
+            "SecondaryIPv6Addresses": null,
+            "EndpointID": "",
+            "Gateway": "",
+            "GlobalIPv6Address": "",
+            "GlobalIPv6PrefixLen": 0,
+            "IPAddress": "",
+            "IPPrefixLen": 0,
+            "IPv6Gateway": "",
+            "MacAddress": "",
+            "Networks": {
+                "kind": {
+                    "IPAMConfig": null,
+                    "Links": null,
+                    "Aliases": null,
+                    "MacAddress": "ca:ad:df:f2:db:cc",
+                    "DriverOpts": null,
+                    "GwPriority": 0,
+                    "NetworkID": "546c32285bc2f7cc51cdd5eaf998aa553794b4090cf7268cf699bcab69eac5d0",
+                    "EndpointID": "0697d2f969e5fe2d2f93cae5c02206e829cee2ff3b00cb97b807fb3c2a09c307",
+                    "Gateway": "172.20.0.1",
+                    "IPAddress": "172.20.0.3",
+                    "IPPrefixLen": 16,
+                    "IPv6Gateway": "fc00:f853:ccd:e793::1",
+                    "GlobalIPv6Address": "fc00:f853:ccd:e793::3",
+                    "GlobalIPv6PrefixLen": 64,
+                    "DNSNames": [
+                        "aegis-demo-worker",
+                        "480960e87a7c"
+                    ]
+                }
+            }
+        }
+    }
+]

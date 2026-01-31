@@ -8,7 +8,7 @@ Defines typed state structures for the multi-agent incident analysis workflow:
 - VerificationPlan: Shadow verification planning output
 """
 
-from datetime import datetime
+from datetime import UTC, datetime
 from enum import Enum
 from typing import Annotated, Any, Literal
 
@@ -130,7 +130,7 @@ class RCAResult(BaseModel):
         default_factory=list,
         description="List of affected system components",
     )
-    timestamp: datetime = Field(default_factory=datetime.utcnow)
+    timestamp: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
 
 class FixProposal(BaseModel):

@@ -7,6 +7,8 @@ Defines the complete multi-agent workflow using LangGraph's StateGraph:
 - Async execution with proper error handling
 """
 
+import asyncio
+import shutil
 from typing import TYPE_CHECKING, Any, cast
 
 from langchain_core.runnables import RunnableConfig
@@ -16,6 +18,7 @@ from langgraph.graph import START, StateGraph
 from aegis.agent.agents import rca_agent, solution_agent, verifier_agent
 from aegis.agent.analyzer import get_k8sgpt_analyzer
 from aegis.agent.state import IncidentState, K8sGPTAnalysis, create_initial_state
+from aegis.config.settings import settings
 from aegis.observability._logging import get_logger
 
 
@@ -24,6 +27,88 @@ if TYPE_CHECKING:
 
 
 log = get_logger(__name__)
+
+
+async def _run_kubectl(args: list[str], timeout: int) -> str | None:
+    """Run kubectl command and return stdout if successful."""
+    if not shutil.which("kubectl"):
+        return None
+
+    process = await asyncio.create_subprocess_exec(
+        "kubectl",
+        *args,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    try:
+        stdout, _stderr = await asyncio.wait_for(process.communicate(), timeout=timeout)
+    except TimeoutError:
+        process.kill()
+        await process.wait()
+        return None
+
+    if process.returncode != 0:
+        return None
+
+    return stdout.decode().strip() if stdout else None
+
+
+async def _fetch_kubectl_context(
+    resource_type: str,
+    resource_name: str,
+    namespace: str,
+    timeout: int,
+) -> dict[str, str | None]:
+    """Fetch kubectl logs/describe/events to enrich RCA/solution prompts."""
+    describe = await _run_kubectl(
+        ["-n", namespace, "describe", resource_type, resource_name],
+        timeout=timeout,
+    )
+
+    events = await _run_kubectl(
+        [
+            "-n",
+            namespace,
+            "get",
+            "events",
+            "--field-selector",
+            f"involvedObject.name={resource_name}",
+            "--sort-by=.lastTimestamp",
+        ],
+        timeout=timeout,
+    )
+
+    logs = None
+    pod_name = None
+
+    if resource_type.lower() == "pod":
+        pod_name = resource_name
+    else:
+        selector_logs = await _run_kubectl(
+            ["-n", namespace, "get", "pods", "-l", f"app={resource_name}", "-o", "name"],
+            timeout=timeout,
+        )
+        if selector_logs:
+            pod_name = selector_logs.splitlines()[0].split("/")[-1]
+        else:
+            all_pods = await _run_kubectl(
+                ["-n", namespace, "get", "pods", "-o", "name"],
+                timeout=timeout,
+            )
+            if all_pods:
+                for item in all_pods.splitlines():
+                    name = item.split("/")[-1]
+                    if name.startswith(f"{resource_name}-"):
+                        pod_name = name
+                        break
+
+    if pod_name:
+        logs = await _run_kubectl(
+            ["-n", namespace, "logs", pod_name, "--tail=200"],
+            timeout=timeout,
+        )
+
+    return {"logs": logs, "describe": describe, "events": events}
 
 
 def create_incident_workflow(
@@ -153,6 +238,18 @@ async def analyze_incident(
         # Not an error - resource is healthy
         state["no_problems"] = True
         return state
+
+    # Enrich context with kubectl output (real cluster only)
+    if not use_mock:
+        context = await _fetch_kubectl_context(
+            resource_type=resource_type,
+            resource_name=resource_name,
+            namespace=namespace,
+            timeout=settings.kubernetes.api_timeout,
+        )
+        state["kubectl_logs"] = context.get("logs")
+        state["kubectl_describe"] = context.get("describe")
+        state["kubectl_events"] = context.get("events")
 
     # Select workflow
     if use_checkpoint:

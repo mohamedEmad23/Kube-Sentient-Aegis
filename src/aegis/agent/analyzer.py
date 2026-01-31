@@ -1,8 +1,8 @@
-"""K8sGPT analyzer with graceful fallback for development.
+"""K8sGPT analyzer with explicit mock support for development.
 
 Provides a production-ready wrapper for K8sGPT CLI tool with:
 - Automatic detection of K8sGPT availability
-- Mock data support for development without clusters
+- Explicit mock data opt-in for development without clusters
 - Async subprocess execution
 - JSON output parsing with Pydantic validation
 - Comprehensive error handling and logging
@@ -10,6 +10,7 @@ Provides a production-ready wrapper for K8sGPT CLI tool with:
 
 import asyncio
 import json
+import os
 import shutil
 from typing import Any
 
@@ -23,12 +24,12 @@ log = get_logger(__name__)
 
 
 class K8sGPTAnalyzer:
-    """Wrapper for K8sGPT CLI with mock support for development."""
+    """Wrapper for K8sGPT CLI with explicit mock support for development."""
 
     def __init__(self) -> None:
         """Initialize K8sGPT analyzer and check availability."""
         self.cli_path = shutil.which("k8sgpt")
-        self.backend = "localai"  # K8sGPT backend name (not the model name)
+        self.backend = os.getenv("AEGIS_K8SGPT_BACKEND", os.getenv("K8SGPT_BACKEND", "ollama"))
         self.is_available = self.cli_path is not None
 
     async def analyze(
@@ -60,8 +61,8 @@ class K8sGPTAnalyzer:
             >>> print(result.problems)
             1
         """
-        # Use mock data if K8sGPT not available or explicitly requested
-        if use_mock or not self.is_available:
+        # Use mock data only when explicitly requested
+        if use_mock:
             log.info(
                 "using_mock_data",
                 resource_type=resource_type,
@@ -70,29 +71,36 @@ class K8sGPTAnalyzer:
             )
             return self._get_mock_analysis(resource_type, resource_name, namespace)
 
+        if not self.is_available:
+            msg = "K8sGPT CLI not found. Install k8sgpt or rerun with use_mock=True."
+            log.error("k8sgpt_not_installed")
+            raise RuntimeError(msg)
+
         # Build K8sGPT command
         # K8sGPT filters are case-sensitive (e.g., "Pod" not "pod")
         filter_name = resource_type.capitalize()
-        cmd: list[str] = [
-            self.cli_path or "",
-            "analyze",
-            f"--filter={filter_name}",
-            f"--namespace={namespace}",
-            "--output=json",
-        ]
 
-        if explain:
-            cmd.append("--explain")
-            cmd.extend([f"--backend={self.backend}"])
+        async def _run_k8sgpt(filter_value: str | None) -> dict[str, Any]:
+            cmd: list[str] = [
+                self.cli_path or "",
+                "analyze",
+                f"--namespace={namespace}",
+                "--output=json",
+            ]
+            if filter_value:
+                cmd.insert(2, f"--filter={filter_value}")
 
-        log.debug(
-            "running_k8sgpt",
-            command=" ".join(cmd),
-            resource=f"{resource_type}/{resource_name}",
-        )
+            if explain:
+                cmd.append("--explain")
+                cmd.extend([f"--backend={self.backend}"])
 
-        try:
-            # Execute K8sGPT CLI asynchronously
+            log.debug(
+                "running_k8sgpt",
+                command=" ".join(cmd),
+                resource=f"{resource_type}/{resource_name}",
+                filter=filter_value,
+            )
+
             process = await asyncio.create_subprocess_exec(
                 *cmd,
                 stdout=asyncio.subprocess.PIPE,
@@ -108,7 +116,7 @@ class K8sGPTAnalyzer:
                 log.exception("k8sgpt_timeout", timeout=settings.kubernetes.api_timeout)
                 process.kill()
                 await process.wait()
-                return self._get_mock_analysis(resource_type, resource_name, namespace)
+                raise RuntimeError("K8sGPT analysis timed out") from None
 
             if process.returncode != 0:
                 log.error(
@@ -116,21 +124,51 @@ class K8sGPTAnalyzer:
                     returncode=process.returncode,
                     stderr=stderr.decode(),
                 )
-                # Fallback to mock on error
-                return self._get_mock_analysis(resource_type, resource_name, namespace)
+                raise RuntimeError(f"K8sGPT execution failed (exit {process.returncode})") from None
 
-            # Parse JSON output
-            raw_output = json.loads(stdout.decode())
+            return json.loads(stdout.decode())
+
+        try:
+            raw_output = await _run_k8sgpt(filter_name)
 
             # Filter results for specific resource
             # K8sGPT returns name as "namespace/resource" so we need to match both formats
             results_list = raw_output.get("results") or []
 
-            filtered_results = [
-                r
-                for r in results_list
-                if r.get("name") == resource_name or r.get("name") == f"{namespace}/{resource_name}"
-            ]
+            def _matches_resource(result: dict[str, Any]) -> bool:
+                name = result.get("name") or ""
+                if name == resource_name or name == f"{namespace}/{resource_name}":
+                    return True
+                if name.startswith(f"{resource_name}-") or name.startswith(
+                    f"{namespace}/{resource_name}-"
+                ):
+                    return True
+
+                parent = result.get("parentObject") or result.get("parent_object") or {}
+                parent_name = parent.get("name")
+                parent_ns = parent.get("namespace")
+                if parent_name == resource_name and (parent_ns in (None, namespace)):
+                    return True
+                if (
+                    parent_name
+                    and parent_ns
+                    and f"{parent_ns}/{parent_name}" == f"{namespace}/{resource_name}"
+                ):
+                    return True
+
+                return False
+
+            filtered_results = [r for r in results_list if _matches_resource(r)]
+
+            if not filtered_results and filter_name != "Pod":
+                log.info(
+                    "k8sgpt_fallback_unfiltered",
+                    resource=f"{resource_type}/{resource_name}",
+                    namespace=namespace,
+                )
+                raw_output = await _run_k8sgpt(None)
+                results_list = raw_output.get("results") or []
+                filtered_results = [r for r in results_list if _matches_resource(r)]
 
             filtered_output = {
                 "status": raw_output.get("status", "OK"),
@@ -150,11 +188,11 @@ class K8sGPTAnalyzer:
 
         except json.JSONDecodeError as e:
             log.exception("k8sgpt_json_parse_error", error=str(e))
-            return self._get_mock_analysis(resource_type, resource_name, namespace)
+            raise RuntimeError("K8sGPT returned invalid JSON") from e
 
         except OSError as e:
             log.exception("k8sgpt_unexpected_error", error=str(e))
-            return self._get_mock_analysis(resource_type, resource_name, namespace)
+            raise RuntimeError(f"K8sGPT unexpected error: {e}") from e
         else:
             return analysis
 

@@ -16,10 +16,11 @@ Usage:
 """
 
 import asyncio
+import os
 from typing import Any
 
 import kopf
-from kubernetes import client
+from kubernetes import client, config
 from kubernetes.client.rest import ApiException
 
 from aegis.crd.k8sgpt_models import (
@@ -39,6 +40,28 @@ logger = get_logger(__name__)
 
 # In-memory cache of processed results to avoid duplicate processing
 _processed_results: set[str] = set()
+
+# Flag to track if kubernetes config has been loaded
+_k8s_config_loaded = False
+
+
+def _ensure_k8s_config() -> None:
+    """Ensure Kubernetes configuration is loaded."""
+    global _k8s_config_loaded
+    if _k8s_config_loaded:
+        return
+
+    # Check if running inside a cluster
+    in_cluster = os.getenv("AEGIS_K8S_IN_CLUSTER", "false").lower() == "true"
+
+    if in_cluster:
+        config.load_incluster_config()
+        logger.info("Loaded in-cluster Kubernetes config")
+    else:
+        config.load_kube_config()
+        logger.info("Loaded kubeconfig from file")
+
+    _k8s_config_loaded = True
 
 
 def _get_result_key(namespace: str, name: str) -> str:
@@ -426,6 +449,9 @@ async def configure_k8sgpt_watching(
         **_kwargs: Additional arguments from kopf.
     """
     logger.info("Configuring K8sGPT Result watching...")
+
+    # Ensure Kubernetes config is loaded
+    _ensure_k8s_config()
 
     # Verify K8sGPT CRD is installed
     api = client.ApiextensionsV1Api()

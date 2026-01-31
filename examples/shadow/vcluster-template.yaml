@@ -120,12 +120,4 @@ exportKubeConfig:
   secret:
     name: "vc-shadow-kubeconfig"
 
-# Labels for shadow identification
-labels:
-  aegis.io/component: shadow-environment
-  aegis.io/managed-by: aegis-operator
-
-# Annotations
-annotations:
-  aegis.io/purpose: fix-verification
-  aegis.io/auto-cleanup: "true"
+# Labels/annotations omitted for compatibility with older vcluster config schema.

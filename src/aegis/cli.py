@@ -31,9 +31,11 @@ from rich.table import Table
 
 from aegis.agent.graph import analyze_incident
 from aegis.agent.llm.ollama import get_ollama_client
+from aegis.agent.state import FixProposal, VerificationPlan
 from aegis.config.settings import settings
 from aegis.observability._logging import get_logger
 from aegis.observability._metrics import active_incidents, incidents_detected_total
+from aegis.shadow.manager import get_shadow_manager
 
 
 # HTTP Status Codes
@@ -299,6 +301,71 @@ def _display_analysis_results(console: Console, result: dict[str, Any]) -> None:
         console.print()
 
 
+def _build_shadow_changes(fix_proposal: FixProposal) -> dict[str, Any]:
+    """Convert a fix proposal into shadow verification changes."""
+    changes: dict[str, Any] = {}
+    if fix_proposal.manifests:
+        changes["manifests"] = fix_proposal.manifests
+    if fix_proposal.commands:
+        changes["commands"] = fix_proposal.commands
+    return changes
+
+
+def _run_shadow_verification(
+    *,
+    console: Console,
+    resource_type: str,
+    resource_name: str,
+    namespace: str,
+    fix_proposal: FixProposal,
+    verification_plan: VerificationPlan,
+) -> tuple[str | None, bool | None, str | None]:
+    """Execute shadow verification and return (shadow_id, passed, logs)."""
+    shadow_manager = get_shadow_manager()
+    resource_kind = {
+        "pod": "Pod",
+        "deployment": "Deployment",
+        "statefulset": "StatefulSet",
+    }.get(resource_type.lower(), resource_type.capitalize())
+
+    changes = _build_shadow_changes(fix_proposal)
+    if not changes:
+        console.print(
+            "[yellow]No actionable changes found for shadow verification. Skipping.[/yellow]"
+        )
+        return None, None, None
+
+    async def _execute() -> tuple[str | None, bool | None, str | None]:
+        shadow_env = await shadow_manager.create_shadow(
+            source_namespace=namespace,
+            source_resource=resource_name,
+            source_resource_kind=resource_kind,
+        )
+        passed = await shadow_manager.run_verification(
+            shadow_id=shadow_env.id,
+            changes=changes,
+            duration=verification_plan.duration,
+            verification_plan=verification_plan,
+        )
+        logs = None
+        env = shadow_manager.get_environment(shadow_env.id)
+        if env and env.logs:
+            logs = "\n".join(env.logs)
+        if settings.shadow.auto_cleanup:
+            await shadow_manager.cleanup(shadow_env.id)
+        return shadow_env.id, passed, logs
+
+    with console.status("[bold blue]Running shadow verification..."):
+        try:
+            shadow_id, passed, logs = asyncio.run(_execute())
+        except Exception as e:  # pragma: no cover - runtime path
+            log.exception("shadow_verification_failed_cli")
+            console.print(f"[bold red]Shadow verification failed:[/bold red] {e}\n")
+            return None, False, None
+
+    return shadow_id, passed, logs
+
+
 @typed_command(app)
 def analyze(
     resource: str = typer.Argument(
@@ -322,6 +389,11 @@ def analyze(
         "-e",
         help="Export analysis report to markdown file",
     ),
+    verify: bool | None = typer.Option(
+        None,
+        "--verify/--no-verify",
+        help="Run shadow verification automatically when a plan is available",
+    ),
     mock: bool = typer.Option(
         False,
         "--mock",
@@ -334,6 +406,7 @@ def analyze(
         aegis analyze pod/nginx-crashloop
         aegis analyze deployment/api --namespace prod
         aegis analyze pod/nginx --auto-fix --export report.md
+        aegis analyze deployment/demo-api -n production --verify
         aegis analyze pod/demo --mock  # Development mode without cluster
     """
     console.print(
@@ -420,6 +493,46 @@ def analyze(
                 )
             )
             console.print()
+
+        # Optionally run shadow verification
+        verification_plan = result.get("verification_plan")
+        fix_proposal = result.get("fix_proposal")
+        run_verification = verify if verify is not None else settings.agent.dry_run_by_default
+        if (
+            run_verification
+            and not mock
+            and verification_plan
+            and fix_proposal
+            and verification_plan.verification_type == "shadow"
+        ):
+            shadow_id, passed, logs = _run_shadow_verification(
+                console=console,
+                resource_type=resource_type,
+                resource_name=resource_name,
+                namespace=namespace,
+                fix_proposal=fix_proposal,
+                verification_plan=verification_plan,
+            )
+            result["shadow_env_id"] = shadow_id
+            result["shadow_test_passed"] = passed
+            result["shadow_logs"] = logs
+
+            status = "[bold green]PASSED[/bold green]" if passed else "[bold red]FAILED[/bold red]"
+            details = f"[bold]Shadow ID:[/bold] {shadow_id}\n[bold]Result:[/bold] {status}"
+            if logs:
+                tail = "\n".join(logs.splitlines()[-6:])
+                details += f"\n\n[bold]Evidence Logs:[/bold]\n{tail}"
+
+            console.print(
+                Panel(
+                    details,
+                    title="[bold magenta]Shadow Verification[/bold magenta]",
+                    border_style="magenta",
+                )
+            )
+            console.print()
+        elif run_verification and mock:
+            console.print("[yellow]Shadow verification skipped in mock mode.[/yellow]\n")
 
         # Update metrics
         incidents_detected_total.labels(

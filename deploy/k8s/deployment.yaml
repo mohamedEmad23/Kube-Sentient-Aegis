@@ -1,0 +1,73 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: aegis-operator
+  namespace: aegis-system
+  labels:
+    app.kubernetes.io/name: aegis
+    app.kubernetes.io/component: operator
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: aegis
+      app.kubernetes.io/component: operator
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: aegis
+        app.kubernetes.io/component: operator
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8080"
+        prometheus.io/path: "/metrics"
+    spec:
+      serviceAccountName: aegis-operator
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
+      containers:
+        - name: operator
+          image: aegis-operator:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: metrics
+              containerPort: 8080
+              protocol: TCP
+            - name: health
+              containerPort: 8000
+              protocol: TCP
+          envFrom:
+            - configMapRef:
+                name: aegis-operator-config
+          env:
+            # Ollama URL - adjust based on your setup
+            - name: OLLAMA_BASE_URL
+              value: "http://ollama.aegis-system.svc.cluster.local:11434"
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: health
+            initialDelaySeconds: 10
+            periodSeconds: 30
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: health
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+      terminationGracePeriodSeconds: 30

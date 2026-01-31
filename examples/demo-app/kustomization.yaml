@@ -4,8 +4,6 @@
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 
-namespace: production
-
 resources:
   - namespaces.yaml
   - demo-db.yaml
@@ -13,9 +11,10 @@ resources:
   - demo-api.yaml
   - demo-worker.yaml
 
-commonLabels:
-  environment: demo
-  managed-by: aegis
+labels:
+  - pairs:
+      environment: demo
+      managed-by: aegis
 
 # Common annotations
 commonAnnotations:

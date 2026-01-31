@@ -14,6 +14,11 @@ NC := \033[0m # No Color
 PROJECT_NAME := aegis
 PYTHON := python3.12
 UV := uv
+KIND_NODE_IMAGE ?= kindest/node:v1.30.0
+KIND_ROOTLESS_ENV :=
+ifneq (,$(findstring /run/user/,$(DOCKER_HOST)))
+KIND_ROOTLESS_ENV := KIND_EXPERIMENTAL_ROOTLESS=1
+endif
 
 # Detect OS
 UNAME_S := $(shell uname -s)
@@ -318,7 +323,10 @@ demo-setup: ## Install all demo prerequisites (Kind, K8sGPT, vCluster, Ollama)
 
 demo-cluster-create: ## Create Kind cluster for demos
 	@echo -e "$(BLUE)Creating Kind cluster 'aegis-demo'...$(NC)"
-	@kind create cluster --config examples/cluster/kind-config.yaml --name aegis-demo
+	@env -u KIND_EXPERIMENTAL_CONTAINERD_SNAPSHOTTER $(KIND_ROOTLESS_ENV) kind create cluster \
+		--config examples/cluster/kind-config.yaml \
+		--name aegis-demo \
+		--image $(KIND_NODE_IMAGE)
 	@kubectl wait --for=condition=Ready nodes --all --timeout=120s
 	@echo -e "$(GREEN)✓ Cluster created$(NC)"
 

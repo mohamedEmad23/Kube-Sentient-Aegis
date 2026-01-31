@@ -52,6 +52,22 @@ shadow_verifications_total = Counter(
     namespace=settings.observability.metrics_namespace,
 )
 
+shadow_smoke_tests_total = Counter(
+    name="shadow_smoke_tests_total",
+    documentation="Total number of shadow smoke tests executed",
+    labelnames=["result", "target"],
+    registry=registry,
+    namespace=settings.observability.metrics_namespace,
+)
+
+shadow_load_tests_total = Counter(
+    name="shadow_load_tests_total",
+    documentation="Total number of shadow load tests executed",
+    labelnames=["result", "target"],
+    registry=registry,
+    namespace=settings.observability.metrics_namespace,
+)
+
 agent_iterations_total = Counter(
     name="agent_iterations_total",
     documentation="Total number of LangGraph agent workflow iterations",
@@ -167,6 +183,22 @@ shadow_verification_duration_seconds = Histogram(
     namespace=settings.observability.metrics_namespace,
 )
 
+shadow_smoke_test_duration_seconds = Histogram(
+    name="shadow_smoke_test_duration_seconds",
+    documentation="Time taken for shadow smoke tests",
+    buckets=[1.0, 5.0, 10.0, 30.0, 60.0, 120.0],
+    registry=registry,
+    namespace=settings.observability.metrics_namespace,
+)
+
+shadow_load_test_duration_seconds = Histogram(
+    name="shadow_load_test_duration_seconds",
+    documentation="Time taken for shadow load tests",
+    buckets=[10.0, 30.0, 60.0, 120.0, 300.0, 600.0],
+    registry=registry,
+    namespace=settings.observability.metrics_namespace,
+)
+
 llm_request_duration_seconds = Histogram(
     name="llm_request_duration_seconds",
     documentation="LLM request duration in seconds",
@@ -191,6 +223,8 @@ def initialize_metrics() -> None:
     incidents_detected_total.labels(severity="high", resource_type="pod", namespace="default")
     fixes_applied_total.labels(fix_type="restart", namespace="default", success="true")
     shadow_verifications_total.labels(result="passed", fix_type="config_change")
+    shadow_smoke_tests_total.labels(result="passed", target="service")
+    shadow_load_tests_total.labels(result="passed", target="service")
     agent_iterations_total.labels(agent_name="rca_agent", status="completed")
     llm_requests_total.labels(model="phi3:mini", status="success")
     k8sgpt_analyses_total.labels(resource_type="pod", problems_found="0")
@@ -227,6 +261,10 @@ __all__ = [
     "operator_reconciliations_total",
     "registry",
     "shadow_environments_active",
+    "shadow_load_test_duration_seconds",
+    "shadow_load_tests_total",
+    "shadow_smoke_test_duration_seconds",
+    "shadow_smoke_tests_total",
     "shadow_verification_duration_seconds",
     "shadow_verifications_total",
     "system_healthy",
