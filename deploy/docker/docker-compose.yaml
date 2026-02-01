@@ -9,16 +9,22 @@ services:
       dockerfile: deploy/docker/Dockerfile
     container_name: aegis-operator
     restart: unless-stopped
+    # Map container user to host UID/GID for least-privilege kubeconfig access
+    # Use current user's UID:GID instead of root
+    user: "${AEGIS_UID:-1000}:${AEGIS_GID:-1000}"
     ports:
-      - "8080:8080"  # Metrics
+      - "8080:8080" # Metrics
     environment:
       - AEGIS_ENVIRONMENT=development
       - AEGIS_SHADOW_MODE_ENABLED=true
       - AEGIS_OBSERVABILITY_LOG_FORMAT=console
       - AEGIS_OBSERVABILITY_LOG_LEVEL=DEBUG
       - AEGIS_K8S_IN_CLUSTER=false
+      - KUBECONFIG=/home/aegis/.kube/config
       - OLLAMA_BASE_URL=http://host.docker.internal:11434
+      - HOME=/home/aegis
     volumes:
+      # Mount kubeconfig with read-only access to a non-root home directory
       - ~/.kube:/home/aegis/.kube:ro
     extra_hosts:
       - "host.docker.internal:host-gateway"
@@ -49,9 +55,9 @@ services:
       - ./prometheus/rules:/etc/prometheus/rules:ro
       - prometheus-data:/prometheus
     command:
-      - '--config.file=/etc/prometheus/prometheus.yml'
-      - '--storage.tsdb.path=/prometheus'
-      - '--web.enable-lifecycle'
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--web.enable-lifecycle"
     networks:
       - aegis-network
 

@@ -14,7 +14,7 @@ from aegis.agent.prompts.solution_prompts import (
     SOLUTION_SYSTEM_PROMPT,
     SOLUTION_USER_PROMPT_TEMPLATE,
 )
-from aegis.agent.state import AgentNode, FixProposal, IncidentState
+from aegis.agent.state import AgentNode, FixProposal, FixType, IncidentState
 from aegis.config.settings import settings
 from aegis.observability._logging import get_logger
 from aegis.observability._metrics import agent_iterations_total
@@ -42,6 +42,52 @@ def _ensure_solution_verbosity(
             "Chosen because it directly addresses the root cause with minimal scope and "
             "a clear rollback path."
         )
+
+    return fix_proposal.model_copy(update=updates) if updates else fix_proposal
+
+
+def _ensure_actionable_fix(
+    state: IncidentState,
+    fix_proposal: FixProposal,
+) -> FixProposal:
+    """Ensure the fix proposal has actionable commands or manifests."""
+    updates: dict[str, object] = {}
+
+    commands = [cmd for cmd in fix_proposal.commands if cmd.strip()]
+    if commands != fix_proposal.commands:
+        updates["commands"] = commands
+
+    if not commands and fix_proposal.manifests:
+        updates["commands"] = [
+            f"kubectl apply -f {filename} -n {state['namespace']}"
+            for filename in fix_proposal.manifests
+        ]
+        return fix_proposal.model_copy(update=updates)
+
+    if not commands and not fix_proposal.manifests:
+        manual_commands = [
+            f"kubectl describe {state['resource_type']}/{state['resource_name']} -n {state['namespace']}",
+            (
+                f"kubectl logs {state['resource_type']}/{state['resource_name']} "
+                f"-n {state['namespace']} --tail=200"
+            ),
+            f"kubectl get events -n {state['namespace']} --sort-by=.lastTimestamp | tail -n 20",
+        ]
+        updates.update(
+            {
+                "fix_type": FixType.MANUAL,
+                "description": (
+                    "Manual intervention required. The proposal lacked actionable fix steps; "
+                    "run diagnostic commands and apply a reviewed fix."
+                ),
+                "commands": manual_commands,
+                "rollback_commands": [],
+                "estimated_downtime": fix_proposal.estimated_downtime,
+                "confidence_score": min(fix_proposal.confidence_score, 0.5),
+                "risks": fix_proposal.risks or ["Manual changes require review."],
+            }
+        )
+        return fix_proposal.model_copy(update=updates)
 
     return fix_proposal.model_copy(update=updates) if updates else fix_proposal
 
@@ -120,6 +166,7 @@ async def solution_agent(
             temperature=0.2,  # Very low temperature for deterministic solutions
         )
         fix_proposal = _ensure_solution_verbosity(state, fix_proposal)
+        fix_proposal = _ensure_actionable_fix(state, fix_proposal)
 
         # Record metrics
         agent_iterations_total.labels(
