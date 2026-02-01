@@ -16,14 +16,15 @@ Usage:
 """
 
 import asyncio
-import os
 from functools import lru_cache
 from typing import Any
 
 import kopf
 from kubernetes import client, config
 from kubernetes.client.rest import ApiException
+from kubernetes.config.config_exception import ConfigException
 
+from aegis.config.settings import settings
 from aegis.crd.k8sgpt_models import (
     K8SGPT_API_GROUP,
     K8SGPT_API_VERSION,
@@ -43,18 +44,61 @@ logger = get_logger(__name__)
 _processed_results: set[str] = set()
 
 
+class KubernetesConfigError(Exception):
+    """Raised when Kubernetes configuration cannot be loaded."""
+
+
 @lru_cache(maxsize=1)
 def _ensure_k8s_config() -> None:
-    """Ensure Kubernetes configuration is loaded."""
-    # Check if running inside a cluster
-    in_cluster = os.getenv("AEGIS_K8S_IN_CLUSTER", "false").lower() == "true"
+    """Ensure Kubernetes configuration is loaded.
 
-    if in_cluster:
-        config.load_incluster_config()
-        logger.info("Loaded in-cluster Kubernetes config")
-    else:
-        config.load_kube_config()
-        logger.info("Loaded kubeconfig from file")
+    Uses settings.kubernetes.in_cluster for consistency with CLI.
+    Raises KubernetesConfigError if configuration cannot be loaded.
+    """
+    try:
+        if settings.kubernetes.in_cluster:
+            config.load_incluster_config()
+            logger.info("Loaded in-cluster Kubernetes config")
+        else:
+            # Use settings for kubeconfig path and context
+            config.load_kube_config(
+                config_file=settings.kubernetes.kubeconfig_path,
+                context=settings.kubernetes.context,
+            )
+            logger.info(
+                "Loaded kubeconfig from file",
+                kubeconfig_path=settings.kubernetes.kubeconfig_path,
+                context=settings.kubernetes.context,
+            )
+    except ConfigException as e:
+        logger.exception(
+            "Failed to load Kubernetes config",
+            in_cluster=settings.kubernetes.in_cluster,
+            error=str(e),
+        )
+        raise KubernetesConfigError(f"Failed to load Kubernetes configuration: {e}") from e
+    except FileNotFoundError as e:
+        logger.exception(
+            "Kubeconfig file not found",
+            kubeconfig_path=settings.kubernetes.kubeconfig_path,
+            error=str(e),
+        )
+        raise KubernetesConfigError(
+            f"Kubeconfig file not found: {settings.kubernetes.kubeconfig_path}"
+        ) from e
+    except PermissionError as e:
+        logger.exception(
+            "Permission denied reading kubeconfig",
+            kubeconfig_path=settings.kubernetes.kubeconfig_path,
+            error=str(e),
+        )
+        raise KubernetesConfigError(f"Permission denied reading kubeconfig: {e}") from e
+    except Exception as e:
+        logger.exception(
+            "Unexpected error loading Kubernetes config",
+            error=str(e),
+        )
+        raise KubernetesConfigError(f"Unexpected error loading Kubernetes config: {e}") from e
 
 
 def _get_result_key(namespace: str, name: str) -> str:
@@ -440,11 +484,23 @@ async def configure_k8sgpt_watching(
     Args:
         logger: Kopf logger instance.
         **_kwargs: Additional arguments from kopf.
+
+    Raises:
+        KubernetesConfigError: If Kubernetes config cannot be loaded.
     """
     logger.info("Configuring K8sGPT Result watching...")
 
-    # Ensure Kubernetes config is loaded
-    _ensure_k8s_config()
+    # Ensure Kubernetes config is loaded with proper error handling
+    try:
+        _ensure_k8s_config()
+    except KubernetesConfigError:
+        logger.exception(
+            "Failed to load Kubernetes configuration. "
+            "Please ensure you have valid kubeconfig or are running in-cluster. "
+            "Set AEGIS_K8S_IN_CLUSTER=true for in-cluster mode."
+        )
+        # Re-raise to prevent operator from starting with invalid config
+        raise
 
     # Verify K8sGPT CRD is installed
     api = client.ApiextensionsV1Api()

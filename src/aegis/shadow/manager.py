@@ -63,6 +63,9 @@ LOAD_TEST_IMAGE = "locustio/locust:2.42.6"
 DEFAULT_SMOKE_PATHS = ["/health", "/ready", "/healthz", "/readyz"]
 SMOKE_TEST_TIMEOUT_SECONDS = 120
 JOB_POLL_INTERVAL_SECONDS = 2
+CURL_CONNECT_TIMEOUT_SECONDS = 10
+CURL_MAX_TIME_SECONDS = 30
+JOB_ACTIVE_DEADLINE_SECONDS = 180
 KUBECTL_SKIP_ARGS = {"-n", "--namespace", "--context", "--kubeconfig"}
 KUBECTL_MIN_ARGS = 2
 KUBECTL_SET_MIN_ARGS = 3
@@ -1304,7 +1307,8 @@ class ShadowManager:
             "set -e\n"
             "for path in $SMOKE_PATHS; do\n"
             '  echo "SMOKE_CHECK ${path}"\n'
-            '  curl -fsS "${TARGET_BASE}${path}" >/dev/null\n'
+            f"  curl -fsS --connect-timeout {CURL_CONNECT_TIMEOUT_SECONDS} "
+            f'--max-time {CURL_MAX_TIME_SECONDS} "${{TARGET_BASE}}${{path}}" >/dev/null\n'
             "done\n"
             'echo "SMOKE_OK"\n'
         )
@@ -1318,6 +1322,7 @@ class ShadowManager:
             spec=client.V1JobSpec(
                 backoff_limit=0,
                 ttl_seconds_after_finished=300,
+                active_deadline_seconds=JOB_ACTIVE_DEADLINE_SECONDS,
                 template=client.V1PodTemplateSpec(
                     metadata=client.V1ObjectMeta(labels={"aegis.io/test": "smoke"}),
                     spec=client.V1PodSpec(
@@ -1536,7 +1541,7 @@ class ShadowManager:
         """Parse Locust failure rate from logs."""
         for line in logs.splitlines():
             if line.strip().startswith("Aggregated"):
-                match = re.search(r"\\((\\d+\\.?\\d*)%\\)", line)
+                match = re.search(r"\((\d+\.?\d*)%\)", line)
                 if match:
                     return float(match.group(1)) / 100.0
         return None

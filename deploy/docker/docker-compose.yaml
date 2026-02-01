@@ -9,7 +9,9 @@ services:
       dockerfile: deploy/docker/Dockerfile
     container_name: aegis-operator
     restart: unless-stopped
-    user: root # Run as root to read mounted kubeconfig
+    # Map container user to host UID/GID for least-privilege kubeconfig access
+    # Use current user's UID:GID instead of root
+    user: "${AEGIS_UID:-1000}:${AEGIS_GID:-1000}"
     ports:
       - "8080:8080" # Metrics
     environment:
@@ -18,10 +20,12 @@ services:
       - AEGIS_OBSERVABILITY_LOG_FORMAT=console
       - AEGIS_OBSERVABILITY_LOG_LEVEL=DEBUG
       - AEGIS_K8S_IN_CLUSTER=false
-      - KUBECONFIG=/root/.kube/config
+      - KUBECONFIG=/home/aegis/.kube/config
       - OLLAMA_BASE_URL=http://host.docker.internal:11434
+      - HOME=/home/aegis
     volumes:
-      - ~/.kube:/root/.kube:ro
+      # Mount kubeconfig with read-only access to a non-root home directory
+      - ~/.kube:/home/aegis/.kube:ro
     extra_hosts:
       - "host.docker.internal:host-gateway"
     networks:
