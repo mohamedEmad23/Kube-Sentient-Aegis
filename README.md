@@ -1,1081 +1,745 @@
-# 🛡️ AEGIS - Autonomous SRE Agent with Shadow Verification
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="./images/banner-white.png" width="600px;">
+  <img alt="Text changing depending on mode. Light: 'So light!' Dark: 'So dark!'" src="./images/banner-black.png" width="600px;">
+</picture>
+<br/>
 
-[![CI Status](https://github.com/your-org/aegis/workflows/CI/badge.svg)](https://github.com/your-org/aegis/actions)
-[![codecov](https://codecov.io/gh/your-org/aegis/branch/main/graph/badge.svg)](https://codecov.io/gh/your-org/aegis)
-[![Python 3.12+](https://img.shields.io/badge/python-3.12+-blue.svg)](https://www.python.org/downloads/)
-[![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
-[![Code style: ruff](https://img.shields.io/badge/code%20style-ruff-000000.svg)](https://github.com/astral-sh/ruff)
+![GitHub code size in bytes](https://img.shields.io/github/languages/code-size/k8sgpt-ai/k8sgpt)
+![GitHub Workflow Status](https://img.shields.io/github/actions/workflow/status/k8sgpt-ai/k8sgpt/release.yaml)
+![GitHub release (latest by date)](https://img.shields.io/github/v/release/k8sgpt-ai/k8sgpt)
+[![OpenSSF Best Practices](https://bestpractices.coreinfrastructure.org/projects/7272/badge)](https://bestpractices.coreinfrastructure.org/projects/7272)
+[![Link to documentation](https://img.shields.io/static/v1?label=%F0%9F%93%96&message=Documentation&color=blue)](https://docs.k8sgpt.ai/)
+[![FOSSA Status](https://app.fossa.com/api/projects/git%2Bgithub.com%2Fk8sgpt-ai%2Fk8sgpt.svg?type=shield)](https://app.fossa.com/projects/git%2Bgithub.com%2Fk8sgpt-ai%2Fk8sgpt?ref=badge_shield)
+[![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
+[![Go version](https://img.shields.io/github/go-mod/go-version/k8sgpt-ai/k8sgpt.svg)](https://github.com/k8sgpt-ai/k8sgpt)
+[![codecov](https://codecov.io/github/k8sgpt-ai/k8sgpt/graph/badge.svg?token=ZLR7NG8URE)](https://codecov.io/github/k8sgpt-ai/k8sgpt)
+![GitHub last commit (branch)](https://img.shields.io/github/last-commit/k8sgpt-ai/k8sgpt/main)
 
-**AEGIS** is an autonomous SRE agent that detects, analyzes, and fixes production incidents using AI-powered reasoning and shadow verification sandboxes.
+`k8sgpt` is a tool for scanning your Kubernetes clusters, diagnosing, and triaging issues in simple English.
 
-## 🌟 Key Features
+It has SRE experience codified into its analyzers and helps to pull out the most relevant information to enrich it with AI.
 
-- **Shadow Verification**: Test fixes in ephemeral sandbox environments before production deployment
-- **AI-Powered Analysis**: Uses local LLMs (Ollama/vLLM) for intelligent incident diagnosis
-- **Multi-Layer Isolation**: vCluster + Kata Containers + gVisor for secure testing
-- **Automated Security Testing**: OWASP ZAP, Trivy, and custom exploit generation
-- **Full Observability**: Prometheus, Loki, OpenTelemetry integration
-- **Kubernetes-Native**: Built as a Kubernetes operator using Kopf
+_Out of the box integration with OpenAI, Azure, Cohere, Amazon Bedrock, Google Gemini and local models._
 
-## 📋 Table of Contents
+<a href="https://www.producthunt.com/posts/k8sgpt?utm_source=badge-featured&utm_medium=badge&utm_souce=badge-k8sgpt" target="_blank"><img src="https://api.producthunt.com/widgets/embed-image/v1/featured.svg?post_id=389489&theme=light" alt="K8sGPT - K8sGPT&#0032;gives&#0032;Kubernetes&#0032;Superpowers&#0032;to&#0032;everyone | Product Hunt" style="width: 250px; height: 54px;" width="250" height="54" /></a> <a href="https://hellogithub.com/repository/9dfe44c18dfb4d6fa0181baf8b2cf2e1" target="_blank"><img src="https://abroad.hellogithub.com/v1/widgets/recommend.svg?rid=9dfe44c18dfb4d6fa0181baf8b2cf2e1&claim_uid=gqG4wmzkMrP0eFy" alt="Featured｜HelloGitHub" style="width: 250px; height: 54px;" width="250" height="54" /></a>
 
+
+<img src="images/demo4.gif" width="650px">
+
+# Table of Contents
+- [Overview](#k8sgpt)
+- [Installation](#cli-installation)
 - [Quick Start](#quick-start)
-- [Prerequisites](#prerequisites)
-- [Installation](#installation)
-- [Development Setup](#development-setup)
-- [GPU Configuration](#gpu-configuration)
-- [Architecture](#architecture)
-- [Usage](#usage)
-- [Testing](#testing)
+- [Analyzers](#analyzers)
+- [Examples](#examples)
+- [LLM AI Backends](#llm-ai-backends)
+- [Key Features](#key-features)
+- [Model Context Protocol (MCP)](#model-context-protocol-mcp)
+- [Documentation](#documentation)
 - [Contributing](#contributing)
+- [Community](#community)
 - [License](#license)
 
-## 🚀 Quick Start for Team Members
+# CLI Installation
 
-> **👥 For Data Scientists & Security Engineers** - Complete setup in one command
+### Linux/Mac via brew
 
-### One-Command Setup (Recommended)
-
-```bash
-# 1. Clone the repository
-git clone https://github.com/your-org/aegis.git
-cd aegis
-
-# 2. Ensure Python 3.12+ is installed
-python3 --version  # Must be 3.12 or higher
-
-# 3. Install uv package manager
-curl -LsSf https://astral.sh/uv/install.sh | sh
-
-# 4. Run the master setup command (installs everything)
-make setup
+```sh
+brew install k8sgpt
 ```
 
-✅ This single command does everything:
+or
 
-- ✓ Installs all Python dependencies (production + development)
-- ✓ Creates `.env` file from template
-- ✓ Installs pre-commit git hooks
-- ✓ Detects your GPU automatically
-- ✓ Recommends optimal Ollama models for your VRAM
-- ✓ Verifies everything is working
-
-## 🎯 Quick Demo (5 minutes)
-
-### One-Command Demo (Recommended)
-
-```bash
-# 1. Start observability stack
-docker compose -f deploy/docker/docker-compose.yaml up -d
-
-# 2. Create a local Kind cluster and deploy the demo app
-./scripts/demo-setup.sh
-
-# 3. Analyze a resource with mock data (no cluster required)
-aegis analyze pod/demo-nginx --namespace default --mock
-
-# 4. View results
-# - Prometheus: http://localhost:9090
-# - Grafana:    http://localhost:3000 (admin / aegis123)
-
-# 5. Optional: create a real incident and analyze it
-kubectl apply -f examples/incidents/crashloop-missing-env.yaml
-aegis analyze pod/nginx-crashloop --namespace default
+```sh
+brew tap k8sgpt-ai/k8sgpt
+brew install k8sgpt
 ```
 
-### After Setup: Check Your GPU
+<details>
+  <summary>RPM-based installation (RedHat/CentOS/Fedora)</summary>
 
-```bash
-# Auto-detect GPU and get recommendations
-make gpu-check
+**32 bit:**
 
-# Output example (8GB VRAM):
-# NVIDIA GPU detected: RTX 3070
-# Recommended models: llama3.2:3b, phi3:mini, qwen2:7b
-```
+  <!---x-release-please-start-version-->
 
-### For GPU Users: Pull Your Models
+  ```
+  sudo rpm -ivh https://github.com/k8sgpt-ai/k8sgpt/releases/download/v0.4.27/k8sgpt_386.rpm
+  ```
+  <!---x-release-please-end-->
 
-```bash
-# Automatically pulls the best model for your GPU VRAM
-make ollama-pull
+**64 bit:**
 
-# Or manually pull specific models
-ollama pull llama3.2:3b
-ollama pull phi3:mini
-ollama pull tinyllama:1b
-```
+  <!---x-release-please-start-version-->
+  ```
+  sudo rpm -ivh https://github.com/k8sgpt-ai/k8sgpt/releases/download/v0.4.27/k8sgpt_amd64.rpm
+  ```
+  <!---x-release-please-end-->
+</details>
 
-### For CPU-Only Users: Use Free Cloud APIs
+<details>
+  <summary>DEB-based installation (Ubuntu/Debian)</summary>
 
-```bash
-# Get free API keys (no credit card required, ever):
-# Groq: https://console.groq.com/keys (fastest, 30 req/min free)
-# Google Gemini: https://aistudio.google.com/apikey (1M token context)
+**32 bit:**
 
-# Add to .env
-GROQ_API_KEY=your_key_here
-GOOGLE_API_KEY=your_key_here
-
-# Run - the router will automatically use them!
-make run-operator
-```
-
-## 📦 Prerequisites
-
-### Required Software
-
-| Tool | Version | Purpose | Installation |
-|------|---------|---------|--------------|
-| **Python** | 3.12+ | Runtime | [python.org](https://www.python.org/downloads/) |
-| **uv** | Latest | Package manager | `curl -LsSf https://astral.sh/uv/install.sh \| sh` |
-| **Docker** | 24.0+ | Container runtime | [docker.com](https://docs.docker.com/get-docker/) |
-| **kubectl** | 1.28+ | Kubernetes CLI | [kubernetes.io](https://kubernetes.io/docs/tasks/tools/) |
-| **Helm** | 3.12+ | K8s package manager | [helm.sh](https://helm.sh/docs/intro/install/) |
-| **Ollama** | 0.13+ | Local LLM server | [ollama.com](https://ollama.com/download) |
-
-### GPU Requirements (Optional but Recommended)
-
-**For Local Development (2 teammates):**
-
-- NVIDIA GPU with 8GB+ VRAM
-- CUDA 12.0+ drivers
-- Docker with NVIDIA Container Toolkit
-
-**For Cloud API Development (1 teammate):**
-
-- No GPU required!
-- Free API keys from:
-  - **Groq** (fastest, 30 req/min free) - Recommended
-  - **Google Gemini** (1M token context, free tier)
-  - Optional: OpenAI, Anthropic, DeepSeek for paid fallback
-
-**Tested Configurations:**
-
-- RTX 3060 (12GB) - ✅ Excellent (local Ollama)
-- RTX 3070 (8GB) - ✅ Good (quantized models)
-- RTX 4060 (8GB) - ✅ Good (quantized models)
-- Intel Iris Xe - ✅ Perfect (Groq/Gemini APIs, $0 cost)
-
-### Kubernetes Cluster
-
-**Local Development:**
-
-```bash
-# Option 1: k3s (lightweight)
-curl -sfL https://get.k3s.io | sh -
-
-# Option 2: minikube
-minikube start --cpus=4 --memory=8192 --driver=docker
-
-# Option 3: kind
-kind create cluster --config deploy/kind-config.yaml
-```
-
-**Production:**
-
-- GKE, EKS, AKS, or any CNCF-certified Kubernetes
-- Minimum 3 nodes with 8GB RAM each
-- GPU nodes optional but recommended
-
-## 🔧 Installation
-
-### 1. Development Environment
-
-```bash
-# Install all dependencies
-make install-dev
-
-# Setup pre-commit hooks
-make setup-precommit
-
-# Verify installation
-make quality
-make test-unit
-```
-
-### 2. GPU Drivers (if using NVIDIA GPUs)
-
-```bash
-# NVIDIA Driver Installation (Ubuntu/Debian)
-sudo apt update
-sudo apt install -y nvidia-driver-545  # Or latest
-sudo reboot
-
-# Verify
-nvidia-smi
-
-# Install NVIDIA Container Toolkit
-distribution=$(. /etc/os-release;echo $ID$VERSION_ID)
-curl -s -L https://nvidia.github.io/libnvidia-container/gpgkey | sudo apt-key add -
-curl -s -L https://nvidia.github.io/libnvidia-container/$distribution/libnvidia-container.list | sudo tee /etc/apt/sources.list.d/nvidia-container-toolkit.list
-sudo apt update
-sudo apt install -y nvidia-container-toolkit
-sudo systemctl restart docker
-
-# Verify Docker GPU access
-docker run --rm --gpus all nvidia/cuda:12.0-base nvidia-smi
-```
-
-### 3. Ollama Setup
-
-```bash
-# Install Ollama
-curl -fsSL https://ollama.com/install.sh | sh
-
-# Pull recommended models
-ollama pull llama3.1:8b           # Primary model (10GB VRAM)
-ollama pull llama3.1:8b-q4_K_M    # Quantized (6GB VRAM)
-ollama pull codellama:13b         # Code analysis (14GB VRAM)
-ollama pull mistral:7b            # Fallback (8GB VRAM)
-
-# Start Ollama server
-ollama serve
-```
-
-### 4. Kubernetes Components
-
-```bash
-# Install vCluster CLI
-curl -L -o vcluster "https://github.com/loft-sh/vcluster/releases/latest/download/vcluster-linux-amd64"
-chmod +x vcluster && sudo mv vcluster /usr/local/bin/
-
-# Install K8sGPT
-curl -LO "https://github.com/k8sgpt-ai/k8sgpt/releases/latest/download/k8sgpt_Linux_x86_64.tar.gz"
-tar -xzf k8sgpt_Linux_x86_64.tar.gz
-sudo mv k8sgpt /usr/local/bin/
-
-# Configure K8sGPT to use Ollama
-k8sgpt auth add --backend ollama --model llama3.1:8b --baseurl http://localhost:11434/v1
-```
-
-## 💻 Development Setup
-
-### Project Structure Overview
+  <!---x-release-please-start-version-->
 
 ```
-aegis/
-├── src/aegis/          # Main source code
-├── tests/              # Test suite
-├── deploy/             # Deployment manifests
-├── docs/               # Documentation
-└── scripts/            # Utility scripts
+curl -LO https://github.com/k8sgpt-ai/k8sgpt/releases/download/v0.4.27/k8sgpt_386.deb
+sudo dpkg -i k8sgpt_386.deb
 ```
 
-### Common Development Commands
+  <!---x-release-please-end-->
 
-```bash
-# Code quality
-make lint              # Run linter
-make format            # Format code
-make type-check        # Type checking
-make quality           # All quality checks
+**64 bit:**
 
-# Testing
-make test              # Run all tests
-make test-unit         # Unit tests only
-make test-cov          # With coverage report
-make test-watch        # Watch mode
-
-# Development
-make run-operator      # Run operator locally
-make shell             # IPython shell
-make docs-serve        # Serve docs at localhost:8000
-
-# Kubernetes
-make k8s-setup         # Setup local cluster
-make k8s-deploy-dev    # Deploy to dev
-make k8s-logs          # Tail operator logs
-
-# Docker
-make docker-build      # Build images
-make docker-run        # Run in Docker
-
-# GPU
-make gpu-check         # Check GPU status
-make ollama-pull       # Download models
-
-# Cleanup
-make clean             # Remove artifacts
-make clean-all         # Deep clean (includes venv)
-```
-
-### Pre-commit Hooks
-
-Pre-commit hooks run automatically before each commit:
-
-```bash
-# Install hooks
-make setup-precommit
-
-# Run manually on all files
-make pre-commit-all
-
-# Bypass hooks (not recommended)
-git commit --no-verify
-```
-
-**What gets checked:**
-
-- ✅ Ruff linting and formatting
-- ✅ Type checking (mypy)
-- ✅ Secret scanning (detect-secrets)
-- ✅ Security scanning (bandit)
-- ✅ YAML/JSON validation
-- ✅ Dockerfile linting
-- ✅ Conventional commit messages
-
-## 🎮 GPU Configuration
-
-### Team GPU Setup
-
-We support hybrid development with mixed GPU configurations:
-
-```yaml
-# config/gpu-profiles/team-gpus.yaml
-
-team_setup:
-  teammate_1:  # Strong GPU
-    primary_gpu: "local-rtx3060"
-    fallback: "cloud-l4"
-
-  teammate_2:  # Mid GPU
-    primary_gpu: "local-rtx3070"
-    fallback: "cloud-t4"
-
-  teammate_3:  # No GPU
-    primary_gpu: "cloud-t4"
-    fallback: "cpu-only"
-    openai_api: true
-```
-
-### Automatic GPU Detection
-
-The system automatically detects available GPUs:
-
-```python
-# Run GPU check
-make gpu-check
-
-# Output example:
-# ✓ NVIDIA RTX 3060 detected (12GB VRAM)
-# ✓ CUDA 12.2 installed
-# ✓ Ollama server running
-# ✓ Model llama3.1:8b loaded (10GB used)
-# → Recommended: Use local GPU for development
-```
-
-### Cloud GPU Fallback
-
-If no local GPU is available, the system automatically uses cloud GPUs:
-
-```bash
-# Set cloud provider credentials
-export GCP_PROJECT_ID="your-project"
-export AWS_REGION="us-east-1"
-
-# Deploy cloud GPU instance
-make cloud-deploy
-
-# Operator will automatically route LLM requests to cloud
-```
-
-## 📂 Project Structure & Key Files
+  <!---x-release-please-start-version-->
 
 ```
-aegis/
-├── .github/                      # GitHub Actions CI/CD
-├── .vscode/                      # VS Code settings (shared for team)
-├── config/
-│   ├── gpu-profiles/
-│   │   └── team-gpus.yaml        # 👈 Team GPU configuration
-│   └── models/
-├── deploy/
-│   ├── docker/                   # Docker images & compose
-│   ├── helm/                     # Kubernetes Helm charts
-│   ├── kustomize/                # Kustomize overlays (dev/staging/prod)
-│   └── terraform/                # Infrastructure as Code
-├── docs/                         # 📖 Documentation
-│   ├── architecture/             # Design & architecture
-│   ├── deployment/               # Deployment guides
-│   └── development/              # Developer guides
-├── src/aegis/                    # 🔥 Main source code
-│   ├── agent/                    # AI agent logic
-│   ├── cli.py                    # Command-line interface
-│   ├── config/                   # Configuration management
-│   ├── kubernetes/               # K8s operators
-│   ├── observability/            # Logging & metrics
-│   ├── operator/                 # K8s operator
-│   ├── security/                 # Security scanning
-│   └── utils/                    # Utilities
-├── tests/                        # 🧪 Test suite
-│   ├── unit/                     # Unit tests (fast)
-│   ├── integration/              # Integration tests (K8s)
-│   └── fixtures/                 # Test data
-├── .editorconfig                 # Editor configuration
-├── .env.example                  # Environment variables template
-├── .pre-commit-config.yaml       # ⚙️ Git hooks configuration
-├── .secrets.baseline             # Secrets scanning baseline
-├── Makefile                      # 📜 Development commands (see below)
-├── pyproject.toml                # Python project config
-└── README.md                     # This file
+curl -LO https://github.com/k8sgpt-ai/k8sgpt/releases/download/v0.4.27/k8sgpt_amd64.deb
+sudo dpkg -i k8sgpt_amd64.deb
 ```
 
-### Important Files You'll Use
+  <!---x-release-please-end-->
+</details>
 
-| File | Purpose | Edit? |
-|------|---------|-------|
-| [Makefile](Makefile) | All development commands (`make setup`, `make test`, etc.) | ❌ No |
-| [.env.example](.env.example) | Template for environment variables | ℹ️ Only to add new vars |
-| `.env` | Your local config (auto-created, don't commit!) | ✅ Yes |
-| [pyproject.toml](pyproject.toml) | Python dependencies & config | ❌ Ask Mohammed |
-| [.pre-commit-config.yaml](.pre-commit-config.yaml) | Git hooks config | ❌ No |
-| [config/gpu-profiles/team-gpus.yaml](config/gpu-profiles/team-gpus.yaml) | Team GPU info | ✅ Update yours |
-| [src/aegis/](src/aegis/) | **Main code** | ✅ Yes |
-| [tests/](tests/) | **Test files** | ✅ Yes |
+<details>
+
+  <summary>APK-based installation (Alpine)</summary>
+
+**32 bit:**
+
+  <!---x-release-please-start-version-->
+  ```
+  wget https://github.com/k8sgpt-ai/k8sgpt/releases/download/v0.4.27/k8sgpt_386.apk
+  apk add --allow-untrusted k8sgpt_386.apk
+  ```
+  <!---x-release-please-end-->
+
+**64 bit:**
+
+  <!---x-release-please-start-version-->
+  ```
+  wget https://github.com/k8sgpt-ai/k8sgpt/releases/download/v0.4.27/k8sgpt_amd64.apk
+  apk add --allow-untrusted k8sgpt_amd64.apk
+  ```
+  <!---x-release-please-end-->
+</details>
+
+<details>
+  <summary>Failing Installation on WSL or Linux (missing gcc)</summary>
+  When installing Homebrew on WSL or Linux, you may encounter the following error:
 
 ```
-┌──────────────────────────────────────────────────────────────┐
-│                     AEGIS CONTROL PLANE                      │
-├──────────────────────────────────────────────────────────────┤
-│  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐          │
-│  │ LLM Engine  │  │ Agent Core  │  │ Decision    │          │
-│  │ (Ollama)    │  │ (LangGraph) │  │ Engine      │          │
-│  └──────┬──────┘  └──────┬──────┘  └──────┬──────┘          │
-│         └────────────────┼────────────────┘                  │
-│  ┌──────────────────────▼──────────────────────────────┐    │
-│  │           AEGIS OPERATOR (Kopf)                      │    │
-│  └──────────────────────┬──────────────────────────────┘    │
-├──────────────────────────┼───────────────────────────────────┤
-│  ┌──────────────────────▼──────────────────────────────┐    │
-│  │        SHADOW VERIFICATION LAYER                     │    │
-│  │  ┌─────────┐ ┌─────────┐ ┌─────────┐ ┌─────────┐   │    │
-│  │  │vCluster │ │  Kata   │ │ gVisor  │ │Ephemeral│   │    │
-│  │  └─────────┘ └─────────┘ └─────────┘ └─────────┘   │    │
-│  └────────────────────────────────────────────────────┘    │
-└──────────────────────────────────────────────────────────────┘
+==> Installing k8sgpt from k8sgpt-ai/k8sgpt Error: The following formula cannot be installed from a bottle and must be
+built from the source. k8sgpt Install Clang or run brew install gcc.
 ```
 
-For detailed architecture documentation, see [docs/architecture/overview.md](docs/architecture/overview.md).
-
-## 🪝 Pre-Commit Hooks & Quality Checks
-
-### What Are Pre-Commit Hooks?
-
-Git hooks automatically run quality checks **before each commit**. This prevents bad code from entering the repository.
-
-### Quality Checks Explained
-
-| Check | Tool | What It Does | Auto-Fixes? |
-|-------|------|-------------|-----------|
-| Trailing whitespace | pre-commit | Removes extra spaces | ✅ Yes |
-| Missing newlines | pre-commit | Adds newlines at EOF | ✅ Yes |
-| YAML/JSON syntax | pre-commit | Validates format | ❌ Report only |
-| Python imports | ruff | Sorts imports correctly | ✅ Yes |
-| Code formatting | ruff-format | Formats code style | ✅ Yes |
-| Linting | ruff | Finds bugs & code issues | ✅ Mostly |
-| Type checking | mypy | Checks type annotations | ❌ Report only |
-| Secrets scanning | detect-secrets | Finds hardcoded secrets | ❌ Report only |
-| Security issues | bandit | Finds security flaws | ❌ Report only |
-
-### Most Common Issue: Import Not Sorted
-
-```bash
-# ❌ BAD - Hook will fail
-from z_module import something
-from a_module import other
-
-# ✅ GOOD - After make format
-from a_module import other
-from z_module import something
-
-# Fix: Just run this before committing
-make format
-git add .
-git commit -m "Your message"
-```
-
-### Pre-Commit Hook Protection
-
-**Protected Branches** (require PR, no direct commits):
-
-- ✅ `main` - Production code only
-
-**Allowed Branches** (direct commits OK, use for development):
-
-- ✓ `feature/*` - New features
-- ✓ `fix/*` - Bug fixes
-- ✓ `docs/*` - Documentation
-- ✓ `develop` - Development branch
-- ✓ `staging` - Staging branch
-
-### Troubleshooting Pre-Commit Issues
-
-```bash
-# "Pre-commit hook failed"
-# Solution: The error message tells you what's wrong
-
-# Most common fix:
-make format  # Auto-fixes formatting
-make lint    # Shows remaining issues
-git add .
-git commit -m "Your message"
-
-# "Secret detected"
-# NEVER commit secrets! Use environment variables:
-# In .env (git-ignored):
-GROQ_API_KEY=gsk_xxxxx
-
-# In code:
-api_key = os.getenv("GROQ_API_KEY")
-
-# "Type checking failed (mypy)"
-# Add type annotations to fix:
-def process_data(data: dict) -> str:  # Add types
-    return str(data)
-
-# Skip hooks only for emergency hotfixes
-git commit --no-verify -m "Critical hotfix"
-```
-
-## 📜 Command Reference - All Development Commands
-
-```bash
-# ============== SETUP (One-time) ==============
-make setup              # Master setup command (installs everything!)
-make install            # Install production dependencies only
-make install-dev        # Install all dependencies (dev + prod)
-
-# ============== CODE QUALITY ==============
-make format             # Auto-format all Python code
-make lint               # Run linter to find issues
-make type-check         # Type checking with mypy
-make security           # Security scanning (bandit, safety)
-make check-all          # Run format + lint + type-check + security
-
-# ============== TESTING ==============
-make test               # Run all tests
-make test-unit          # Unit tests only (fast)
-make test-cov           # Tests with coverage report
-make test-integration   # Integration tests (requires K8s)
-make test-watch         # Watch mode (auto-rerun on changes)
-
-# ============== RUNNING ==============
-make run                # Run operator locally
-make run-dev            # Run operator in dev mode (auto-reload)
-make shell              # Interactive Python shell with project loaded
-make repl               # IPython shell
-
-# ============== GPU & OLLAMA ==============
-make gpu-check          # Auto-detect GPU and recommend models
-make ollama-check       # Check Ollama installation
-make ollama-pull        # Pull recommended model for your GPU
-make ollama-start       # Start Ollama server
-
-# ============== DOCKER & KUBERNETES ==============
-make docker-build       # Build Docker image
-make docker-push        # Push to registry
-make k8s-check          # Verify K8s cluster connection
-make k8s-crds           # Install CRDs
-make helm-lint          # Lint Helm charts
-
-# ============== DOCUMENTATION ==============
-make docs               # Build documentation
-make docs-serve         # Serve docs at http://localhost:8000
-
-# ============== BUILD & RELEASE ==============
-make build              # Build distribution packages
-make publish            # Publish to PyPI
-
-# ============== CLEANUP ==============
-make clean              # Clean build artifacts
-make clean-all          # Deep clean (removes venv too)
-
-# ============== INFO ==============
-make version            # Show project version
-make info               # Show project info
-make help               # Display all commands
-```
-
-### Quick Examples
-
-```bash
-# Start developing a new feature
-git checkout -b feature/my-feature
-make format              # Auto-format code
-make check-all           # Run all quality checks
-git commit -m "feat: my feature"
-git push origin feature/my-feature
-# → Create PR on GitHub
-
-# Before committing (critical!)
-make format              # Auto-format
-make lint                # Find issues
-make type-check          # Check types
-make test                # Run tests
-# Then: git add . && git commit
-
-# Test your changes
-make test                # All tests
-make test-unit           # Fast unit tests
-make test-cov            # With coverage
-
-# Work with your GPU
-make gpu-check           # What GPU do I have?
-make ollama-pull         # Download model
-make run                 # Run the operator
-
-# Clean up
-make clean               # Remove artifacts
-```
-
-## 🔄 Development Workflow (Required Reading)
-
-⚠️ **IMPORTANT: All team members MUST follow this workflow**
-
-### 1️⃣ Create a Feature Branch
-
-```bash
-# Update main branch
-git checkout main
-git pull origin main
-
-# Create your feature branch (use descriptive names)
-git checkout -b feature/your-feature-name
-# or
-git checkout -b fix/bug-description
-# or
-git checkout -b docs/documentation-update
-```
-
-### 2️⃣ Make Your Changes
-
-```bash
-# Edit files in VS Code
-# Write code following Python conventions
-```
-
-### 3️⃣ Format & Lint Before Committing (CRITICAL!)
-
-```bash
-# Auto-format code (fixes whitespace, imports, line endings)
-make format
-
-# Run linter to check code quality
-make lint
-
-# Type checking
-make type-check
-
-# Or run all quality checks in one go
-make check-all
-```
-
-### 4️⃣ Commit Your Changes
-
-```bash
-git add .
-git commit -m "Description of your changes"
-```
-
-⚠️ **Pre-commit hooks will automatically run and check:**
-
-- ✓ Python code formatting (ruff)
-- ✓ Import sorting (ruff)
-- ✓ Type annotations (mypy)
-- ✓ Security vulnerabilities (bandit, detect-secrets)
-- ✓ Whitespace & line endings (auto-fixed)
-
-**If a hook fails:**
-
-- It will tell you what's wrong
-- Most issues are auto-fixed by ruff
-- Just run `git add .` and `git commit` again
-
-**Common errors and fixes:**
-
-```bash
-# Error: "Type checking failed"
-# Fix: Add type annotations, then re-commit
-git add .
-git commit -m "Your message"
-
-# Error: "Secrets detected"
-# Fix: NEVER commit secrets! Use .env instead
-# Bad: API_KEY = "sk-123456789"
-# Good: API_KEY = os.getenv("API_KEY")
-```
-
-### 5️⃣ Push to Remote
-
-```bash
-git push origin feature/your-feature-name
-```
-
-### 6️⃣ Create a Pull Request (PR)
-
-On GitHub:
-
-1. Click "New Pull Request"
-2. Select `main` as base, your branch as compare
-3. Add description of your changes
-4. Request review from teammates
-5. Wait for CI/CD checks and approval
-
-### 7️⃣ After Approval: Merge to Main
-
-Once approved and all checks pass, merge your PR to `main`.
-
-⚠️ **YOU CANNOT COMMIT DIRECTLY TO `main` BRANCH** - This is protected. Always create a PR first.
-
-### Emergency Hotfix Only
-
-```bash
-# Only for critical production fixes
-git commit --no-verify -m "Critical hotfix: [description]"
-
-# Must create a PR immediately after
-```
-
-### Test Organization
+If you install gcc as suggested, the problem will persist. Therefore, you need to install the build-essential package.
 
 ```
-tests/
-├── unit/           # Fast, no external dependencies
-├── integration/    # Require K8s cluster
-├── fixtures/       # Test data and manifests
-└── benchmarks/     # Performance tests
+   sudo apt-get update
+   sudo apt-get install build-essential
 ```
 
-### Running Tests
+</details>
 
-```bash
-# All tests
-make test
+### Windows
 
-# Unit tests only (fast)
-make test-unit
+- Download the latest Windows binaries of **k8sgpt** from the [Release](https://github.com/k8sgpt-ai/k8sgpt/releases)
+  tab based on your system architecture.
+- Extract the downloaded package to your desired location. Configure the system _PATH_ environment variable with the binary location
 
-# Integration tests (requires K8s)
-make test-integration
+## Operator Installation
 
-# With coverage
-make test-cov
+To install within a Kubernetes cluster please use our `k8sgpt-operator` with installation instructions available [here](https://github.com/k8sgpt-ai/k8sgpt-operator)
 
-# GPU tests (requires GPU)
-make test-gpu
+_This mode of operation is ideal for continuous monitoring of your cluster and can integrate with your existing monitoring such as Prometheus and Alertmanager._
 
-# Watch mode (development)
-make test-watch
-```
+## Quick Start
 
-### Test Markers
+- Currently, the default AI provider is OpenAI, you will need to generate an API key from [OpenAI](https://openai.com)
+  - You can do this by running `k8sgpt generate` to open a browser link to generate it
+- Run `k8sgpt auth add` to set it in k8sgpt.
+  - You can provide the password directly using the `--password` flag.
+- Run `k8sgpt filters` to manage the active filters used by the analyzer. By default, all filters are executed during analysis.
+- Run `k8sgpt analyze` to run a scan.
+- And use `k8sgpt analyze --explain` to get a more detailed explanation of the issues.
+- You also run `k8sgpt analyze --with-doc` (with or without the explain flag) to get the official documentation from Kubernetes.
 
-```python
-import pytest
+# Using with Claude Desktop
 
-@pytest.mark.unit
-def test_llm_client():
-    """Fast unit test"""
+K8sGPT can be integrated with Claude Desktop to provide AI-powered Kubernetes cluster analysis. This integration requires K8sGPT v0.4.14 or later.
 
-@pytest.mark.integration
-def test_vcluster_creation():
-    """Requires K8s cluster"""
+## Prerequisites
 
-@pytest.mark.gpu
-def test_ollama_inference():
-    """Requires GPU"""
-
-@pytest.mark.slow
-def test_e2e_scenario():
-    """Long-running E2E test"""
-```
-
-### CI/CD Testing Strategy
-
-```yaml
-# Unit tests: Run on every PR (GitHub Actions CPU)
-# Integration: Run on main branch (with K8s)
-# E2E: Manual or nightly (with cloud GPU)
-# GPU tests: Skip in CI (local only)
-```
-
-## ⚠️ Important Information for Team Members
-
-### GPU Configuration for Your Team
-
-| Role | GPU | VRAM | Recommended Model | Run This |
-|------|-----|------|-------------------|----------|
-| Data Scientist #1 | Unknown | 8GB | llama3.2:3b, phi3:mini | `make gpu-check` |
-| Data Scientist #2 | Unknown | 6GB | tinyllama:1b, phi3:mini | `make gpu-check` |
-| Security Engineer | NVIDIA | Unknown | ? | `make gpu-check` |
-| Lead | Intel Iris Xe | N/A | CPU-only / Cloud APIs | Use Groq/Gemini |
-
-**Your GPU will be auto-detected.** Just run `make gpu-check` and follow the instructions!
-
-### Automatic GPU Detection
-
-The system automatically detects your GPU and recommends models:
-
-```bash
-make gpu-check
-
-# Output if you have NVIDIA GPU:
-# ✓ NVIDIA RTX 3070 detected
-# ✓ Available VRAM: 8GB
-# ✓ Recommended models: llama3.2:3b, phi3:mini
-
-# Output if no GPU:
-# ✓ No NVIDIA GPU detected
-# ✓ Options: Use CPU-only or cloud APIs (Groq, Gemini)
-```
-
-### No GPU? Use Free Cloud APIs
-
-**Zero cost, no credit card required:**
-
-1. **Groq** (Recommended - fastest)
-   - Get key: <https://console.groq.com/keys>
-   - Free tier: 30 requests per minute
-   - No credit card needed
-
-2. **Google Gemini** (Large context)
-   - Get key: <https://aistudio.google.com/apikey>
-   - Free tier: 1M tokens per month
-   - No credit card needed
-
-3. **Add to your .env:**
-
-   ```bash
-   GROQ_API_KEY=gsk_xxxxx
-   GOOGLE_API_KEY=xxxxx
+1. Install K8sGPT v0.4.14 or later:
+   ```sh
+   brew install k8sgpt
    ```
 
-4. **Run - it automatically uses them!**
+2. Install Claude Desktop from the official website
 
-   ```bash
-   make run
+3. Configure K8sGPT with your preferred AI backend:
+   ```sh
+   k8sgpt auth
    ```
 
-### Troubleshooting Setup
+## Setup
+
+1. Start the K8sGPT MCP server:
+   ```sh
+   k8sgpt serve --mcp
+   ```
+
+2. In Claude Desktop:
+   - Open Settings
+   - Navigate to the Integrations section
+   - Add K8sGPT as a new integration
+   - The MCP server will be automatically detected
+
+3. Configure Claude Desktop with the following JSON:
+
+  ```json
+  {
+    "mcpServers": {
+      "k8sgpt": {
+        "command": "k8sgpt",
+        "args": [
+          "serve",
+          "--mcp"
+        ]
+      }
+    }
+  }
+  ```
+
+## Usage
+
+Once connected, you can use Claude Desktop to:
+- Analyze your Kubernetes cluster
+- Get detailed insights about cluster health
+- Receive recommendations for fixing issues
+- Query cluster information
+
+Example commands in Claude Desktop:
+- "Analyze my Kubernetes cluster"
+- "What's the health status of my cluster?"
+- "Show me any issues in the default namespace"
+
+## Troubleshooting
+
+If you encounter connection issues:
+1. Ensure K8sGPT is running with the MCP server enabled
+2. Verify your Kubernetes cluster is accessible
+3. Check that your AI backend is properly configured
+4. Restart both K8sGPT and Claude Desktop
+
+For more information, visit our [documentation](https://docs.k8sgpt.ai).
+
+## Analyzers
+
+K8sGPT uses analyzers to triage and diagnose issues in your cluster. It has a set of analyzers that are built in, but
+you will be able to write your own analyzers.
+
+### Built in analyzers
+
+#### Enabled by default
+
+- [x] podAnalyzer
+- [x] pvcAnalyzer
+- [x] rsAnalyzer
+- [x] serviceAnalyzer
+- [x] eventAnalyzer
+- [x] ingressAnalyzer
+- [x] statefulSetAnalyzer
+- [x] deploymentAnalyzer
+- [x] jobAnalyzer
+- [x] cronJobAnalyzer
+- [x] nodeAnalyzer
+- [x] mutatingWebhookAnalyzer
+- [x] validatingWebhookAnalyzer
+- [x] configMapAnalyzer
+
+#### Optional
+
+- [x] hpaAnalyzer
+- [x] pdbAnalyzer
+- [x] networkPolicyAnalyzer
+- [x] gatewayClass
+- [x] gateway
+- [x] httproute
+- [x] logAnalyzer
+- [x] storageAnalyzer
+- [x] securityAnalyzer
+- [x] CatalogSource
+- [x] ClusterCatalog
+- [x] ClusterExtension
+- [x] ClusterService
+- [x] ClusterServiceVersion
+- [x] OperatorGroup
+- [x] InstallPlan
+- [x] Subscription
+
+## Examples
+
+_Run a scan with the default analyzers_
+
+```
+k8sgpt generate
+k8sgpt auth add
+k8sgpt analyze --explain
+k8sgpt analyze --explain --with-doc
+```
+
+_Filter on resource_
+
+```
+k8sgpt analyze --explain --filter=Service
+```
+
+_Filter by namespace_
+
+```
+k8sgpt analyze --explain --filter=Pod --namespace=default
+```
+
+_Output to JSON_
+
+```
+k8sgpt analyze --explain --filter=Service --output=json
+```
+
+_Anonymize during explain_
+
+```
+k8sgpt analyze --explain --filter=Service --output=json --anonymize
+```
+
+<details>
+<summary> Using filters </summary>
+
+_List filters_
+
+```
+k8sgpt filters list
+```
+
+_Add default filters_
+
+```
+k8sgpt filters add [filter(s)]
+```
+
+### Examples :
+
+- Simple filter : `k8sgpt filters add Service`
+- Multiple filters : `k8sgpt filters add Ingress,Pod`
+
+_Remove default filters_
+
+```
+k8sgpt filters remove [filter(s)]
+```
+
+### Examples :
+
+- Simple filter : `k8sgpt filters remove Service`
+- Multiple filters : `k8sgpt filters remove Ingress,Pod`
+
+</details>
+
+<details>
+
+<summary> Additional commands </summary>
+
+_List configured backends_
+
+```
+k8sgpt auth list
+```
+
+_Update configured backends_
+
+```
+k8sgpt auth update $MY_BACKEND1,$MY_BACKEND2..
+```
+
+_Remove configured backends_
+
+```
+k8sgpt auth remove -b $MY_BACKEND1,$MY_BACKEND2..
+```
+
+_List integrations_
+
+```
+k8sgpt integrations list
+```
+
+_Activate integrations_
+
+```
+k8sgpt integrations activate [integration(s)]
+```
+
+_Use integration_
+
+```
+k8sgpt analyze --filter=[integration(s)]
+```
+
+_Deactivate integrations_
+
+```
+k8sgpt integrations deactivate [integration(s)]
+```
+
+_Serve mode_
+
+```
+k8sgpt serve
+```
+
+_Serve mode with MCP (Model Context Protocol)_
+
+```
+# Enable MCP server on default port 8089
+k8sgpt serve --mcp --mcp-http
+
+# Enable MCP server on custom port
+k8sgpt serve --mcp --mcp-http --mcp-port 8089
+
+# Full serve mode with MCP
+k8sgpt serve --mcp --mcp-http --port 8080 --metrics-port 8081 --mcp-port 8089
+```
+
+The MCP server enables integration with tools like Claude Desktop and other MCP-compatible clients. It runs on port 8089 by default and provides:
+- Kubernetes cluster analysis via MCP protocol
+- Resource information and health status
+- AI-powered issue explanations and recommendations
+
+For Helm chart deployment with MCP support, see the `charts/k8sgpt/values-mcp-example.yaml` file.
+
+_Analysis with serve mode_
+
+```
+grpcurl -plaintext -d '{"namespace": "k8sgpt", "explain" : "true"}' localhost:8080 schema.v1.ServerAnalyzerService/Analyze
+{
+  "status": "OK"
+}
+```
+
+_Analysis with custom headers_
+
+```
+k8sgpt analyze --explain --custom-headers CustomHeaderKey:CustomHeaderValue
+```
+
+_Print analysis stats_
+
+```
+k8sgpt analyze -s
+The stats mode allows for debugging and understanding the time taken by an analysis by displaying the statistics of each analyzer.
+- Analyzer Ingress took 47.125583ms
+- Analyzer PersistentVolumeClaim took 53.009167ms
+- Analyzer CronJob took 57.517792ms
+- Analyzer Deployment took 156.6205ms
+- Analyzer Node took 160.109833ms
+- Analyzer ReplicaSet took 245.938333ms
+- Analyzer StatefulSet took 448.0455ms
+- Analyzer Pod took 5.662594708s
+- Analyzer Service took 38.583359166s
+```
+
+_Diagnostic information_
+
+To collect diagnostic information use the following command to create a `dump_<timestamp>_json` in your local directory.
+```
+k8sgpt dump
+```
+
+</details>
+
+## LLM AI Backends
+
+K8sGPT uses the chosen LLM, generative AI provider when you want to explain the analysis results using --explain flag e.g. `k8sgpt analyze --explain`. You can use `--backend` flag to specify a configured provider (it's `openai` by default).
+
+You can list available providers using `k8sgpt auth list`:
+
+```
+Default:
+> openai
+Active:
+Unused:
+> openai
+> localai
+> ollama
+> azureopenai
+> cohere
+> amazonbedrock
+> amazonsagemaker
+> google
+> huggingface
+> noopai
+> googlevertexai
+> watsonxai
+> customrest
+> ibmwatsonxai
+```
+
+For detailed documentation on how to configure and use each provider see [here](https://docs.k8sgpt.ai/reference/providers/backend/).
+
+_To set a new default provider_
+
+```
+k8sgpt auth default -p azureopenai
+Default provider set to azureopenai
+```
+
+_Using Amazon Bedrock with inference profiles_
+
+_System Inference Profile_
+
+```
+k8sgpt auth add --backend amazonbedrock --providerRegion us-east-1 --model arn:aws:bedrock:us-east-1:123456789012:inference-profile/my-inference-profile
+
+```
+
+_Application Inference Profile_
+
+```
+k8sgpt auth add --backend amazonbedrock --providerRegion us-east-1 --model arn:aws:bedrock:us-east-1:123456789012:application-inference-profile/2uzp4s0w39t6
+
+```
+
+## Key Features
+
+<details>
+
+With this option, the data is anonymized before being sent to the AI Backend. During the analysis execution, `k8sgpt` retrieves sensitive data (Kubernetes object names, labels, etc.). This data is masked when sent to the AI backend and replaced by a key that can be used to de-anonymize the data when the solution is returned to the user.
+
+<summary> Anonymization </summary>
+
+1. Error reported during analysis:
 
 ```bash
-# "make: command not found"
-sudo apt-get install build-essential
-
-# "uv: command not found"
-source $HOME/.cargo/env
-
-# "No module named 'aegis'"
-source .venv/bin/activate
-
-# "NVIDIA GPU not detected"
-# Install NVIDIA drivers first:
-sudo apt-get install nvidia-driver-545
-
-# Pre-commit hook keeps failing?
-make format       # Auto-fix formatting
-make lint         # Check issues
-git add .
-git commit -m "Your message"
+Error: HorizontalPodAutoscaler uses StatefulSet/fake-deployment as ScaleTargetRef which does not exist.
 ```
 
-### What's Git Pre-Commit?
-
-- ✅ Automatic code quality checks before each commit
-- ✅ Prevents bad code from entering the repository
-- ✅ Saves time in code reviews
-- ⚠️ Main branch is protected (no direct commits)
-- ✓ All changes must go through Pull Requests
-
-### GitHub Workflow Summary
-
-1. **Create branch** → `git checkout -b feature/your-feature`
-2. **Make changes** → Edit files
-3. **Format & lint** → `make format && make check-all`
-4. **Commit** → `git commit -m "description"`
-5. **Push** → `git push origin feature/your-feature`
-6. **Create PR** → Click "New Pull Request" on GitHub
-7. **Wait for review** → Get approval
-8. **Merge** → Merge to `main`
-
-⚠️ **You cannot commit directly to `main`** - Always use Pull Requests.
-
-## 🤝 Contributing Guidelines
-
-### Before Contributing
-
-1. Read the [Development Workflow](#-development-workflow) section above
-2. Run `make setup` to ensure everything is installed
-3. Join the team communication channels
-
-### Development Workflow Overview
-
-**The Golden Rules:**
-
-1. ✅ Create a feature branch (never commit to `main`)
-2. ✅ Run `make format` and `make check-all` before committing
-3. ✅ Pre-commit hooks will validate your code
-4. ✅ Create a Pull Request for code review
-5. ✅ Get approval before merging
-
-### Step-by-Step for Your First Contribution
+2. Payload sent to the AI backend:
 
 ```bash
-# 1. Create feature branch
-git checkout -b feature/your-feature
-
-# 2. Make your changes
-# Edit files in src/aegis/ or tests/
-
-# 3. Format & check everything
-make format       # Auto-fixes code style
-make check-all    # Lint, type-check, security
-
-# 4. Commit with a clear message
-git add .
-git commit -m "feat: add your feature"
-# Hooks will run automatically!
-
-# 5. Push to remote
-git push origin feature/your-feature
-
-# 6. On GitHub: Create Pull Request
-# - Describe what you changed
-# - Link related issues
-# - Request review from teammates
-
-# 7. After approval: Merge to main
+Error: HorizontalPodAutoscaler uses StatefulSet/tGLcCRcHa1Ce5Rs as ScaleTargetRef which does not exist.
 ```
 
-### Commit Message Format
-
-Use [Conventional Commits](https://www.conventionalcommits.org/):
-
-```
-feat: add new feature                    # New feature
-fix: correct a bug                       # Bug fix
-docs: update documentation               # Doc changes
-test: add test for feature               # Test changes
-refactor: improve code structure         # Code refactoring
-chore: update dependencies               # Maintenance
-perf: improve performance                # Performance improvement
-```
-
-Examples:
+3. Payload returned by the AI:
 
 ```bash
-git commit -m "feat: add GPU auto-detection"
-git commit -m "fix: correct type annotation in gpu.py"
-git commit -m "docs: add GPU setup guide"
-git commit -m "test: add test for Ollama integration"
+The Kubernetes system is trying to scale a StatefulSet named tGLcCRcHa1Ce5Rs using the HorizontalPodAutoscaler, but it cannot find the StatefulSet. The solution is to verify that the StatefulSet name is spelled correctly and exists in the same namespace as the HorizontalPodAutoscaler.
 ```
 
-### Code Review Process
-
-1. **Create PR** with clear title and description
-2. **Wait for CI checks** (automated quality checks)
-3. **Assign reviewers** (teammates)
-4. **Address feedback** if any
-5. **Get approval** (at least 1 reviewer)
-6. **Merge to main**
-
-### Testing Requirements
+4. Payload returned to the user:
 
 ```bash
-# Before creating PR, run:
-make test          # All tests must pass
-make test-cov      # Coverage check
-make check-all     # All quality checks
+The Kubernetes system is trying to scale a StatefulSet named fake-deployment using the HorizontalPodAutoscaler, but it cannot find the StatefulSet. The solution is to verify that the StatefulSet name is spelled correctly and exists in the same namespace as the HorizontalPodAutoscaler.
 ```
 
-**If tests fail:**
+### Further Details
 
+Note: **Anonymization does not currently apply to events.**
+
+_In a few analysers like Pod, we feed to the AI backend the event messages which are not known beforehand thus we are not masking them for the **time being**._
+
+- The following is the list of analysers in which data is **being masked**:-
+
+  - Statefulset
+  - Service
+  - PodDisruptionBudget
+  - Node
+  - NetworkPolicy
+  - Ingress
+  - HPA
+  - Deployment
+  - Cronjob
+
+- The following is the list of analysers in which data is **not being masked**:-
+
+  - ReplicaSet
+  - PersistentVolumeClaim
+  - Pod
+  - Log
+  - **_\*Events_**
+
+**\*Note**:
+
+- k8gpt will not mask the above analysers because they do not send any identifying information except **Events** analyser.
+- Masking for **Events** analyzer is scheduled in the near future as seen in this [issue](https://github.com/k8sgpt-ai/k8sgpt/issues/560). _Further research has to be made to understand the patterns and be able to mask the sensitive parts of an event like pod name, namespace etc._
+
+- The following is the list of fields which are not **being masked**:-
+
+  - Describe
+  - ObjectStatus
+  - Replicas
+  - ContainerStatus
+  - **_\*Event Message_**
+  - ReplicaStatus
+  - Count (Pod)
+
+**\*Note**:
+
+- It is quite possible the payload of the event message might have something like "super-secret-project-pod-X crashed" which we don't currently redact _(scheduled in the near future as seen in this [issue](https://github.com/k8sgpt-ai/k8sgpt/issues/560))_.
+
+### Proceed with care
+
+- The K8gpt team recommends using an entirely different backend **(a local model) in critical production environments**. By using a local model, you can rest assured that everything stays within your DMZ, and nothing is leaked.
+- If there is any uncertainty about the possibility of sending data to a public LLM (open AI, Azure AI) and it poses a risk to business-critical operations, then, in such cases, the use of public LLM should be avoided based on personal assessment and the jurisdiction of risks involved.
+
+</details>
+
+<details>
+<summary> Configuration management</summary>
+
+`k8sgpt` stores config data in the `$XDG_CONFIG_HOME/k8sgpt/k8sgpt.yaml` file. The data is stored in plain text, including your OpenAI key.
+
+Config file locations:
+| OS | Path |
+| ------- | ------------------------------------------------ |
+| MacOS | ~/Library/Application Support/k8sgpt/k8sgpt.yaml |
+| Linux | ~/.config/k8sgpt/k8sgpt.yaml |
+| Windows | %LOCALAPPDATA%/k8sgpt/k8sgpt.yaml |
+
+</details>
+
+<details>
+There may be scenarios where caching remotely is preferred.
+In these scenarios K8sGPT supports AWS S3 or Azure Blob storage Integration.
+
+<summary> Remote caching </summary>
+<em>Note: You can configure and use only one remote cache at a time</em>
+
+_Adding a remote cache_
+
+- AWS S3
+  - _As a prerequisite `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY` are required as environmental variables._
+  - Configuration, `k8sgpt cache add s3 --region <aws region> --bucket <name>`
+  - Minio Configuration with HTTP endpoint ` k8sgpt cache add s3 --bucket <name> --endpoint <http://localhost:9000>`
+  - Minio Configuration with HTTPs endpoint, skipping TLS verification ` k8sgpt cache add s3 --bucket <name> --endpoint <https://localhost:9000> --insecure`
+    - K8sGPT will create the bucket if it does not exist
+- Azure Storage
+  - We support a number of [techniques](https://learn.microsoft.com/en-us/azure/developer/go/azure-sdk-authentication?tabs=bash#2-authenticate-with-azure) to authenticate against Azure
+  - Configuration, `k8sgpt cache add azure --storageacc <storage account name> --container <container name>`
+    - K8sGPT assumes that the storage account already exist and it will create the container if it does not exist
+    - It is the **user** responsibility have to grant specific permissions to their identity in order to be able to upload blob files and create SA containers (e.g Storage Blob Data Contributor)
+- Google Cloud Storage
+  - _As a prerequisite `GOOGLE_APPLICATION_CREDENTIALS` are required as environmental variables._
+  - Configuration, ` k8sgpt cache add gcs --region <gcp region> --bucket <name> --projectid <project id>`
+    - K8sGPT will create the bucket if it does not exist
+
+_Listing cache items_
+
+```
+k8sgpt cache list
+```
+
+_Purging an object from the cache_
+Note: purging an object using this command will delete upstream files, so it requires appropriate permissions.
+
+```
+k8sgpt cache purge $OBJECT_NAME
+```
+
+_Removing the remote cache_
+Note: this will not delete the upstream S3 bucket or Azure storage container
+
+```
+k8sgpt cache remove
+```
+
+</details>
+
+<details>
+<summary> Custom Analyzers</summary>
+
+There may be scenarios where you wish to write your own analyzer in a language of your choice.
+K8sGPT now supports the ability to do so by abiding by the [schema](https://github.com/k8sgpt-ai/schemas/blob/main/protobuf/schema/v1/custom_analyzer.proto) and serving the analyzer for consumption.
+To do so, define the analyzer within the K8sGPT configuration and it will add it into the scanning process.
+In addition to this you will need to enable the following flag on analysis:
+
+```
+k8sgpt analyze --custom-analysis
+```
+
+Here is an example local host analyzer in [Rust](https://github.com/k8sgpt-ai/host-analyzer)
+When this is run on `localhost:8080` the K8sGPT config can pick it up with the following additions:
+
+```
+custom_analyzers:
+  - name: host-analyzer
+    connection:
+      url: localhost
+      port: 8080
+```
+
+This now gives the ability to pass through hostOS information ( from this analyzer example ) to K8sGPT to use as context with normal analysis.
+
+_See the docs on how to write a custom analyzer_
+
+_Listing custom analyzers configured_
+```
+k8sgpt custom-analyzer list
+```
+
+_Adding custom analyzer without install_
+```
+k8sgpt custom-analyzer add --name my-custom-analyzer --port 8085
+```
+
+_Removing custom analyzer_
+```
+k8sgpt custom-analyzer remove --names "my-custom-analyzer,my-custom-analyzer-2"
+```
+
+</details>
+## Model Context Protocol (MCP)
+
+K8sGPT provides a Model Context Protocol server that exposes Kubernetes operations as standardized tools for AI assistants like Claude, ChatGPT, and other MCP-compatible clients.
+
+**Start the MCP server:**
+
+Stdio mode (for local AI assistants):
 ```bash
-# Fix the issues
-# Then re-run tests
-make test
-
-# Once passing, commit and push
-git add .
-git commit -m "fix: address test failures"
-git push origin feature/your-feature
+k8sgpt serve --mcp
 ```
 
-### When You're Stuck
+HTTP mode (for network access):
+```bash
+k8sgpt serve --mcp --mcp-http --mcp-port 8089
+```
 
-1. **Check the logs**: `make run` shows detailed error messages
-2. **Run tests**: `make test-unit` for fast feedback
-3. **Ask teammates**: Use GitHub Issues or team chat
-4. **Read docs**: Check [docs/](docs/) folder
+**Features:**
+- 12 tools for cluster analysis, resource management, and debugging
+- 3 resources for cluster information access
+- 3 interactive troubleshooting prompts
+- Stateless HTTP mode for one-off invocations
+- Full integration with Claude Desktop and other MCP clients
 
-### Code Quality Standards
+**Learn more:** See [MCP.md](MCP.md) for complete documentation, usage examples, and integration guides.
+## Documentation
 
-All code must:
+Find our official documentation available [here](https://docs.k8sgpt.ai)
 
-- ✅ Pass `make format` (code formatting)
-- ✅ Pass `make lint` (code quality)
-- ✅ Pass `make type-check` (type safety)
-- ✅ Pass `make security` (security scanning)
-- ✅ Have tests (`make test`)
-- ✅ Have documentation in docstrings
+## Contributing
 
-## 📄 License
+Please read our [contributing guide](./CONTRIBUTING.md).
 
-This project is licensed under the Apache License 2.0 - see the [LICENSE](LICENSE) file for details.
+## Community
 
-## 🙏 Acknowledgments
+Find us on [Slack](https://join.slack.com/t/k8sgpt/shared_invite/zt-332vhyaxv-bfjJwHZLXWVCB3QaXafEYQ)
 
-- [Ollama](https://ollama.com/) - Local LLM inference
-- [vCluster](https://www.vcluster.com/) - Virtual Kubernetes clusters
-- [K8sGPT](https://k8sgpt.ai/) - Kubernetes diagnostics
-- [LangGraph](https://github.com/langchain-ai/langgraph) - Agent orchestration
-- All the amazing open-source tools in our stack
+<a href="https://github.com/k8sgpt-ai/k8sgpt/graphs/contributors">
+  <img src="https://contrib.rocks/image?repo=k8sgpt-ai/k8sgpt" />
+</a>
 
-## 📞 Getting Help
+## License
 
-### Common Issues & Solutions
-
-| Issue | Cause | Solution |
-|-------|-------|----------|
-| `make: command not found` | Make not installed | `sudo apt-get install build-essential` |
-| `uv: command not found` | uv not in PATH | `source $HOME/.cargo/env` |
-| `No module named 'aegis'` | venv not activated | `source .venv/bin/activate` |
-| Pre-commit hook fails | Code formatting issue | `make format && git add . && git commit` |
-| NVIDIA GPU not detected | Drivers missing | Install NVIDIA drivers + CUDA |
-| Import sorting error | Imports not sorted | Run `make format` |
-| Type checking error | Missing type annotations | Add type hints to functions |
-
-### Support Channels
-
-- 📖 **Documentation**: [docs/](docs/) folder
-- 🐛 **Found a bug?**: Create [GitHub Issue](https://github.com/your-org/aegis/issues)
-- 💬 **Questions?**: Use GitHub Discussions
-- 📧 **Email**: <team@aegis-sre.dev>
-
-### For Specific Help
-
-**Setup Issues:**
-→ Check [Troubleshooting Setup](#troubleshooting-setup) section above
-
-**Pre-Commit Errors:**
-→ Check [Pre-Commit Hooks & Quality Checks](#-pre-commit-hooks--quality-checks) section
-
-**GPU Problems:**
-→ Run `make gpu-check` for automatic diagnostics
-
-**Test Failures:**
-→ Run `make test-unit` for detailed error messages
-
-### Quick Checklist Before Asking for Help
-
-- [ ] I ran `make setup` successfully
-- [ ] I ran `make gpu-check` and understood my GPU
-- [ ] I ran `make format` on my changes
-- [ ] I ran `make check-all` and all checks pass
-- [ ] I read the relevant documentation section
-- [ ] I checked existing GitHub Issues
-
----
-
-**Built with ❤️ by the AEGIS Team**
+[![FOSSA Status](https://app.fossa.com/api/projects/git%2Bgithub.com%2Fk8sgpt-ai%2Fk8sgpt.svg?type=large)](https://app.fossa.com/projects/git%2Bgithub.com%2Fk8sgpt-ai%2Fk8sgpt?ref=badge_large)
