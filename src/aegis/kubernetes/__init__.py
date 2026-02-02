@@ -1,9 +1,3 @@
-<<<<<<< HEAD
-"""AEGIS Kubernetes package.
-
-Kubernetes API interactions and resource management.
-"""
-=======
 """AEGIS Kubernetes package.
 
 Kubernetes API interactions and resource management.
@@ -27,4 +21,3 @@ __all__ = [
     "get_fix_applier",
     "get_post_fix_monitor",
 ]
->>>>>>> af4493e9664b4940d61757df392615e5aaeb514e
