@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # Kind cluster configuration for AEGIS demo
 # This creates a multi-node cluster suitable for vCluster shadow environments
 #
@@ -83,3 +84,85 @@ containerdConfigPatches:
   - |-
     [plugins."io.containerd.grpc.v1.cri".registry.mirrors."docker.io"]
       endpoint = ["https://registry-1.docker.io"]
+=======
+# Kind cluster configuration for AEGIS demo
+# This creates a multi-node cluster suitable for vCluster shadow environments
+#
+# Usage:
+#   kind create cluster --config examples/cluster/kind-config.yaml --name aegis-demo
+#
+# Features:
+#   - 1 control-plane node
+#   - 2 worker nodes (for realistic scheduling)
+#   - Extra port mappings for NodePort services
+#   - Local registry support
+#   - Ingress-ready configuration
+
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+name: aegis-demo
+
+nodes:
+  # Control plane node
+  - role: control-plane
+    kubeadmConfigPatches:
+      - |
+        kind: InitConfiguration
+        nodeRegistration:
+          kubeletExtraArgs:
+            node-labels: "ingress-ready=true"
+    extraPortMappings:
+      # HTTP ingress (use high ports for rootless Docker)
+      - containerPort: 80
+        hostPort: 18080
+        protocol: TCP
+      # HTTPS ingress (use high ports for rootless Docker)
+      - containerPort: 443
+        hostPort: 18443
+        protocol: TCP
+      # NodePort range for services
+      - containerPort: 30000
+        hostPort: 30000
+        protocol: TCP
+      - containerPort: 30001
+        hostPort: 30001
+        protocol: TCP
+      - containerPort: 30002
+        hostPort: 30002
+        protocol: TCP
+      # Prometheus
+      - containerPort: 30090
+        hostPort: 30090
+        protocol: TCP
+      # Grafana
+      - containerPort: 30030
+        hostPort: 30030
+        protocol: TCP
+
+  # Worker node 1
+  - role: worker
+    labels:
+      node-type: worker
+      aegis-shadow-eligible: "true"
+
+  # Worker node 2
+  - role: worker
+    labels:
+      node-type: worker
+      aegis-shadow-eligible: "true"
+
+# Networking configuration
+networking:
+  # Use default CNI (kindnet)
+  disableDefaultCNI: false
+  # Pod subnet
+  podSubnet: "10.244.0.0/16"
+  # Service subnet
+  serviceSubnet: "10.96.0.0/12"
+
+# Container registry mirrors (optional, for faster pulls)
+containerdConfigPatches:
+  - |-
+    [plugins."io.containerd.grpc.v1.cri".registry.mirrors."docker.io"]
+      endpoint = ["https://registry-1.docker.io"]
+>>>>>>> af4493e9664b4940d61757df392615e5aaeb514e

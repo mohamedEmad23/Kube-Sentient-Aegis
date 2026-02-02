@@ -1,0 +1,39 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "aegis.configMapName" . }}
+  namespace: {{ include "aegis.namespace" . }}
+  labels:
+    {{- include "aegis.labels" . | nindent 4 }}
+data:
+  # Environment settings
+  AEGIS_ENVIRONMENT: {{ .Values.config.environment | quote }}
+  AEGIS_DEBUG: {{ .Values.config.debug | quote }}
+
+  # Shadow verification settings
+  AEGIS_SHADOW_MODE_ENABLED: {{ .Values.config.shadow.enabled | quote }}
+  AEGIS_MAX_CONCURRENT_SHADOWS: {{ .Values.config.shadow.maxConcurrent | quote }}
+  AEGIS_SHADOW_VERIFICATION_TIMEOUT: {{ .Values.config.shadow.verificationTimeout | quote }}
+  AEGIS_SHADOW_AUTO_CLEANUP: {{ .Values.config.shadow.autoCleanup | quote }}
+
+  # Incident management settings
+  AEGIS_AUTO_FIX_ENABLED: {{ .Values.config.incident.autoFixEnabled | quote }}
+  AEGIS_APPROVAL_TIMEOUT_MINUTES: {{ .Values.config.incident.approvalTimeoutMinutes | quote }}
+  AEGIS_POST_FIX_MONITORING_SECONDS: {{ .Values.config.incident.postFixMonitoringSeconds | quote }}
+
+  # Kubernetes settings
+  AEGIS_K8S_IN_CLUSTER: {{ .Values.config.kubernetes.inCluster | quote }}
+  AEGIS_K8S_API_TIMEOUT: {{ .Values.config.kubernetes.apiTimeout | quote }}
+
+  # Observability settings
+  AEGIS_OBSERVABILITY_LOG_FORMAT: {{ .Values.config.observability.logFormat | quote }}
+  AEGIS_OBSERVABILITY_LOG_LEVEL: {{ .Values.config.observability.logLevel | quote }}
+  AEGIS_OBSERVABILITY_METRICS_ENABLED: {{ .Values.config.observability.metricsEnabled | quote }}
+  AEGIS_OBSERVABILITY_TRACING_ENABLED: {{ .Values.config.observability.tracingEnabled | quote }}
+
+  # Ollama LLM settings
+  OLLAMA_BASE_URL: {{ .Values.ollama.baseUrl | quote }}
+  OLLAMA_MODEL: {{ .Values.ollama.model | quote }}
+  OLLAMA_TIMEOUT: {{ .Values.ollama.timeout | quote }}
+  OLLAMA_TEMPERATURE: {{ .Values.ollama.temperature | quote }}
+  OLLAMA_MAX_RETRIES: {{ .Values.ollama.maxRetries | quote }}

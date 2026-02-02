@@ -1,0 +1,15 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: aegis-operator
+  labels:
+    app.kubernetes.io/name: aegis
+    app.kubernetes.io/component: operator
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: aegis-operator
+subjects:
+  - kind: ServiceAccount
+    name: aegis-operator
+    namespace: aegis-system

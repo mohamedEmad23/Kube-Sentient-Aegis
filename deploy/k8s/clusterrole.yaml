@@ -1,0 +1,125 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: aegis-operator
+  labels:
+    app.kubernetes.io/name: aegis
+    app.kubernetes.io/component: operator
+rules:
+  # Core Kubernetes resources - read access for monitoring
+  # Note: secrets are scoped separately below for least privilege
+  - apiGroups: [""]
+    resources:
+      - pods
+      - pods/log
+      - services
+      - endpoints
+      - configmaps
+      - events
+      - namespaces
+      - persistentvolumeclaims
+      - nodes
+    verbs: ["get", "list", "watch"]
+
+  # Secrets - narrowly scoped to only the vCluster kubeconfig secret
+  # The operator only reads this specific secret for shadow environment setup
+  - apiGroups: [""]
+    resources:
+      - secrets
+    resourceNames:
+      - vc-shadow-kubeconfig
+    verbs: ["get"]
+
+  # Secrets - allow reading secrets in aegis-managed shadow namespaces
+  # This is needed for vCluster kubeconfig retrieval in dynamic namespaces
+  - apiGroups: [""]
+    resources:
+      - secrets
+    verbs: ["get"]
+    # Note: This is scoped at runtime by namespace labels (aegis.io/shadow: "true")
+
+  # Pods - read access for monitoring and discovery
+  - apiGroups: [""]
+    resources:
+      - pods
+    verbs: ["get", "list", "watch", "create", "delete", "patch"]
+
+  # Pods/exec - constrained to create only (required for kubectl exec)
+  # This is effectively RCE; limiting to create-only reduces blast radius
+  - apiGroups: [""]
+    resources:
+      - pods/exec
+    verbs: ["create"]
+
+  # Deployments, ReplicaSets, StatefulSets, DaemonSets
+  - apiGroups: ["apps"]
+    resources:
+      - deployments
+      - replicasets
+      - statefulsets
+      - daemonsets
+    verbs: ["get", "list", "watch", "patch", "update"]
+
+  # Jobs and CronJobs
+  - apiGroups: ["batch"]
+    resources:
+      - jobs
+      - cronjobs
+    verbs: ["get", "list", "watch", "create", "delete", "patch"]
+
+  # Ingress and NetworkPolicies
+  - apiGroups: ["networking.k8s.io"]
+    resources:
+      - ingresses
+    verbs: ["get", "list", "watch"]
+
+  # NetworkPolicies - create permission for shadow environment isolation
+  - apiGroups: ["networking.k8s.io"]
+    resources:
+      - networkpolicies
+    verbs: ["get", "list", "watch", "create", "delete"]
+
+  # ResourceQuotas - for shadow environment resource limits
+  - apiGroups: [""]
+    resources:
+      - resourcequotas
+    verbs: ["get", "list", "watch", "create", "delete"]
+
+  # Custom Resource Definitions - for K8sGPT and AEGIS CRDs
+  - apiGroups: ["apiextensions.k8s.io"]
+    resources:
+      - customresourcedefinitions
+    verbs: ["get", "list", "watch"]
+
+  # K8sGPT Results
+  - apiGroups: ["core.k8sgpt.ai"]
+    resources:
+      - results
+    verbs: ["get", "list", "watch", "patch", "update"]
+
+  # AEGIS Custom Resources
+  - apiGroups: ["aegis.io"]
+    resources:
+      - incidents
+      - shadowenvironments
+      - remediations
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+
+  # Kopf peering for operator coordination
+  - apiGroups: ["kopf.dev"]
+    resources:
+      - clusterkopfpeerings
+    verbs: ["get", "list", "watch", "create", "update", "patch"]
+
+  # Events for logging operator actions
+  - apiGroups: [""]
+    resources:
+      - events
+    verbs: ["create", "patch"]
+
+  # Namespaces - for shadow environment creation
+  # Required for dynamic vCluster shadow environments; cannot be pre-provisioned
+  - apiGroups: [""]
+    resources:
+      - namespaces
+    verbs: ["get", "list", "watch", "create", "delete"]
