@@ -27,7 +27,7 @@ repos:
         types: [python]
       - id: check-yaml
         args: [--unsafe]  # Allow custom YAML tags for K8s
-        exclude: ^(docs/|\.vscode/|README\.md|.*\.md)
+        exclude: ^(docs/|\.vscode/|README\.md|.*\.md|deploy/helm/.*)
       - id: check-toml
         exclude: ^(docs/|\.vscode/|README\.md|.*\.md)
       - id: check-json
