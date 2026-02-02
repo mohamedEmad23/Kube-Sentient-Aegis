@@ -7,6 +7,7 @@ from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from kubernetes import config as kubernetes_config
 
 from aegis.crd import (
     ApprovalStatus,
@@ -44,7 +45,11 @@ class TestApprovalHandlerIntegration:
             patch("aegis.k8s_operator.handlers.approval.k8s_config") as mock_config,
             patch("aegis.k8s_operator.handlers.approval.client") as mock_client,
         ):
-            mock_config.load_incluster_config.side_effect = Exception("Not in cluster")
+            # Preserve the real ConfigException class for exception handling
+            mock_config.ConfigException = kubernetes_config.ConfigException
+            mock_config.load_incluster_config.side_effect = kubernetes_config.ConfigException(
+                "Not in cluster"
+            )
             mock_config.load_kube_config.return_value = None
 
             mock_core = MagicMock()

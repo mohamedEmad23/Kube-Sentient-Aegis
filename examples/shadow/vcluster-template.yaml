@@ -90,10 +90,6 @@ controlPlane:
       volumeClaim:
         enabled: false  # Use emptyDir for faster creation
 
-  # Service account configuration
-  serviceAccount:
-    enabled: true
-
 # Networking
 networking:
   # Replicate services between host and vCluster

@@ -57,11 +57,15 @@ class TestFixApplier:
     @pytest.fixture
     def mock_k8s_clients(self):
         """Fixture to mock Kubernetes clients."""
+        from kubernetes.config import ConfigException
+
         with (
             patch("aegis.kubernetes.fix_applier.k8s_config") as mock_config,
             patch("aegis.kubernetes.fix_applier.client") as mock_client,
         ):
-            mock_config.load_incluster_config.side_effect = Exception("Not in cluster")
+            # Make ConfigException a real exception so it can be caught
+            mock_config.ConfigException = ConfigException
+            mock_config.load_incluster_config.side_effect = ConfigException("Not in cluster")
             mock_config.load_kube_config.return_value = None
 
             # Create mock API clients

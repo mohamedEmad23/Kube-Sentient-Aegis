@@ -18,7 +18,7 @@ import asyncio
 import sys
 from collections.abc import Callable
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Any, ParamSpec, TypeVar
+from typing import TYPE_CHECKING, Any, ParamSpec, TypeVar, cast
 
 import kopf
 
@@ -667,38 +667,139 @@ app.add_typer(incident_app, name="incident")
 
 @typed_command(incident_app, name="list")
 def incident_list(
-    _namespace: str | None = typer.Option(
+    namespace: str | None = typer.Option(
         None,
         "--namespace",
         "-n",
-        help="Filter by namespace",
+        help="Filter by namespace (omit to list all namespaces)",
     ),
-    _severity: str | None = typer.Option(
+    severity: str | None = typer.Option(
         None,
         "--severity",
         "-s",
-        help="Filter by severity (high, medium, low)",
+        help="Filter by severity (critical, high, medium, low)",
+    ),
+    all_namespaces: bool = typer.Option(
+        False,
+        "--all-namespaces",
+        "-A",
+        help="List incidents across all namespaces",
     ),
 ) -> None:
     """List active incidents.
 
+    Queries the Kubernetes API for AegisIncident custom resources
+    and displays them in a table format.
+
     Example:
         aegis incident list
         aegis incident list --namespace prod --severity high
+        aegis incident list --all-namespaces
     """
-    table = Table(title="Active Incidents")
-    table.add_column("Incident ID", style="cyan")
-    table.add_column("Severity", style="red")
-    table.add_column("Resource", style="green")
-    table.add_column("Namespace", style="yellow")
-    table.add_column("Status", style="white")
+    from aegis.crd import (
+        AEGIS_API_GROUP,
+        AEGIS_API_VERSION,
+        AEGIS_INCIDENT_PLURAL,
+        AegisIncident,
+    )
 
-    # Placeholder data for MVP
-    table.add_row("inc-2026-001", "HIGH", "pod/nginx", "default", "Analyzing")
-    table.add_row("inc-2026-002", "MEDIUM", "deployment/api", "prod", "Fixing")
+    try:
+        try:
+            k8s_config.load_incluster_config()
+        except k8s_config.ConfigException:
+            k8s_config.load_kube_config()
 
-    console.print(table)
-    console.print()
+        custom = client.CustomObjectsApi()
+
+        # Fetch incidents from Kubernetes API
+        if all_namespaces or namespace is None:
+            # Cluster-wide listing
+            response = custom.list_cluster_custom_object(
+                group=AEGIS_API_GROUP,
+                version=AEGIS_API_VERSION,
+                plural=AEGIS_INCIDENT_PLURAL,
+            )
+        else:
+            # Namespace-scoped listing
+            response = custom.list_namespaced_custom_object(
+                group=AEGIS_API_GROUP,
+                version=AEGIS_API_VERSION,
+                namespace=namespace,
+                plural=AEGIS_INCIDENT_PLURAL,
+            )
+
+        items = response.get("items", [])
+
+        # Parse and filter incidents
+        incidents: list[AegisIncident] = []
+        for item in items:
+            try:
+                incident = AegisIncident.from_kubernetes_object(cast(dict[str, Any], item))
+                # Apply severity filter if specified
+                if severity and incident.spec.severity.value.lower() != severity.lower():
+                    continue
+                incidents.append(incident)
+            except (TypeError, KeyError, ValueError) as e:
+                log.warning("incident_parse_failed", error=str(e))
+                continue
+
+        # Create and populate table
+        table = Table(title="Active Incidents")
+        table.add_column("Incident ID", style="cyan")
+        table.add_column("Severity", style="red")
+        table.add_column("Resource", style="green")
+        table.add_column("Namespace", style="yellow")
+        table.add_column("Phase", style="white")
+        table.add_column("Approval", style="blue")
+
+        if not incidents:
+            console.print(table)
+            console.print("[dim]No incidents found[/dim]\n")
+            return
+
+        for incident in incidents:
+            # Color-code severity
+            severity_val = incident.spec.severity.value.upper()
+            severity_color = _get_severity_color(incident.spec.severity.value)
+            severity_display = f"[{severity_color}]{severity_val}[/{severity_color}]"
+
+            # Color-code phase
+            phase_val = incident.status.phase.value
+            phase_color = _get_phase_color(phase_val)
+            phase_display = f"[{phase_color}]{phase_val}[/{phase_color}]"
+
+            # Resource reference
+            resource_ref = incident.spec.resource_ref
+            resource_display = f"{resource_ref.kind.lower()}/{resource_ref.name}"
+
+            # Approval status
+            approval_status = incident.spec.approval.status.value
+
+            table.add_row(
+                incident.metadata.name,
+                severity_display,
+                resource_display,
+                incident.metadata.namespace,
+                phase_display,
+                approval_status,
+            )
+
+        console.print(table)
+        console.print(f"\n[dim]Total: {len(incidents)} incident(s)[/dim]\n")
+
+    except client.ApiException as e:
+        if e.status == HTTP_NOT_FOUND:
+            console.print(
+                "[bold yellow]Warning:[/bold yellow] AegisIncident CRD not installed. "
+                "Install with: kubectl apply -f deploy/helm/aegis/crds/"
+            )
+        else:
+            console.print(f"[bold red]Error:[/bold red] {e.reason}")
+        raise typer.Exit(code=1) from None
+    except Exception as e:
+        console.print(f"[bold red]Error:[/bold red] {e}")
+        log.exception("incident_list_failed")
+        raise typer.Exit(code=1) from None
 
 
 def _get_severity_color(severity: str) -> str:
@@ -862,7 +963,7 @@ def incident_show(
             plural=AEGIS_INCIDENT_PLURAL,
             name=incident_id,
         )
-        incident = AegisIncident.from_kubernetes_object(obj)
+        incident = AegisIncident.from_kubernetes_object(cast(dict[str, Any], obj))
         details = _build_incident_details(incident, namespace)
 
         panel = Panel(
@@ -984,7 +1085,7 @@ def incident_approve(
             plural=AEGIS_INCIDENT_PLURAL,
             name=incident_id,
         )
-        incident = AegisIncident.from_kubernetes_object(obj)
+        incident = AegisIncident.from_kubernetes_object(cast(dict[str, Any], obj))
     except client.ApiException as e:
         if e.status == HTTP_NOT_FOUND:
             console.print(f"[bold red]Error:[/bold red] Incident '{incident_id}' not found")
@@ -1123,7 +1224,7 @@ def incident_reject(
             plural=AEGIS_INCIDENT_PLURAL,
             name=incident_id,
         )
-        incident = AegisIncident.from_kubernetes_object(obj)
+        incident = AegisIncident.from_kubernetes_object(cast(dict[str, Any], obj))
     except client.ApiException as e:
         if e.status == HTTP_NOT_FOUND:
             console.print(f"[bold red]Error:[/bold red] Incident '{incident_id}' not found")

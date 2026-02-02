@@ -8,6 +8,7 @@ from datetime import UTC, datetime, timedelta
 from unittest.mock import MagicMock, patch
 
 import pytest
+from kubernetes import config as kubernetes_config
 
 from aegis.crd import (
     AegisIncident,
@@ -316,7 +317,11 @@ class TestApprovalWithFixApplier:
             patch("aegis.kubernetes.fix_applier.k8s_config") as config,
             patch("aegis.kubernetes.fix_applier.client") as client_mod,
         ):
-            config.load_incluster_config.side_effect = Exception()
+            # Preserve the real ConfigException class for exception handling
+            config.ConfigException = kubernetes_config.ConfigException
+            config.load_incluster_config.side_effect = kubernetes_config.ConfigException(
+                "Not in cluster"
+            )
             config.load_kube_config.return_value = None
 
             mock_apps = MagicMock()
@@ -375,6 +380,8 @@ class TestMonitoringIntegration:
             patch("aegis.kubernetes.monitoring.k8s_config") as config,
             patch("aegis.kubernetes.monitoring.client") as client_mod,
         ):
+            # Preserve the real ConfigException class for exception handling
+            config.ConfigException = kubernetes_config.ConfigException
             config.load_incluster_config.side_effect = Exception()
             config.load_kube_config.return_value = None
 
