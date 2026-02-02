@@ -221,6 +221,18 @@ class SecuritySettings(BaseSettings):
         default=True,
         description="Enable Falco runtime security monitoring",
     )
+    falco_severity: str = Field(
+        default="WARNING",
+        description="Minimum Falco priority to trigger failure (EMERGENCY,ALERT,CRITICAL,ERROR,WARNING,NOTICE,INFO,DEBUG)",
+    )
+    falco_namespace: str = Field(
+        default="falco",
+        description="Namespace where Falco DaemonSet is deployed",
+    )
+    falco_label_selector: str = Field(
+        default="app=falco",
+        description="Label selector for Falco pods",
+    )
     exploit_sandbox_enabled: bool = Field(
         default=False,
         description="Enable experimental exploit proof-of-concept generation",
