@@ -268,6 +268,9 @@ class ShadowManager:
             shadow_clients = self._build_shadow_clients(kubeconfig_path)
             self._shadow_clients[env.id] = shadow_clients
 
+            # Wait for vCluster API to be reachable before proceeding
+            await self._wait_for_vcluster_api(shadow_clients.core, env.id)
+
             # Ensure target namespace exists inside shadow cluster
             await self._create_namespace(env.namespace, core_api=shadow_clients.core)
             env.logs.append(f"Shadow namespace {env.namespace} created in vCluster")
@@ -637,6 +640,47 @@ class ShadowManager:
             log.warning("shadow_cleanup_failed", shadow_id=env.id)
         finally:
             self._dispose_shadow_clients(env.id)
+
+    async def _wait_for_vcluster_api(
+        self,
+        core_api: client.CoreV1Api,
+        shadow_id: str,
+        timeout_seconds: int = 120,
+        poll_interval: float = 3.0,
+    ) -> None:
+        """Wait for vCluster API server to become reachable.
+
+        Args:
+            core_api: CoreV1Api client configured for the vCluster
+            shadow_id: Shadow environment ID for logging
+            timeout_seconds: Maximum time to wait for API to be ready
+            poll_interval: Seconds between connectivity checks
+        """
+        start = time.monotonic()
+        last_error: OSError | ApiException | None = None
+
+        while time.monotonic() - start < timeout_seconds:
+            try:
+                # Attempt a simple API call to verify connectivity
+                await self._call_api(core_api.list_namespace, limit=1)
+            except (OSError, ApiException) as e:
+                last_error = e
+                log.debug(
+                    "vcluster_api_not_ready",
+                    shadow_id=shadow_id,
+                    error=str(e),
+                    elapsed=round(time.monotonic() - start, 1),
+                )
+                await asyncio.sleep(poll_interval)
+            else:
+                log.info("vcluster_api_ready", shadow_id=shadow_id)
+                return
+
+        error_msg = f"vCluster API not reachable after {timeout_seconds}s"
+        if last_error:
+            error_msg = f"{error_msg}: {last_error}"
+        log.error("vcluster_api_timeout", shadow_id=shadow_id, timeout=timeout_seconds)
+        raise RuntimeError(error_msg)
 
     async def _create_namespace(self, name: str, core_api: client.CoreV1Api | None = None) -> None:
         """Create namespace for shadow environment."""
