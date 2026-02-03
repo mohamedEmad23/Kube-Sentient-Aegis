@@ -10,7 +10,7 @@ from typing import Literal
 from langchain_core.messages import AIMessage, HumanMessage
 from langgraph.types import Command
 
-from aegis.agent.llm.ollama import get_ollama_client
+from aegis.agent.llm.gemini import get_gemini_client
 from aegis.agent.prompts.rca_prompts import RCA_SYSTEM_PROMPT, RCA_USER_PROMPT_TEMPLATE
 from aegis.agent.state import AgentNode, IncidentState, RCAResult
 from aegis.config.settings import settings
@@ -93,7 +93,7 @@ async def rca_agent(
         events_len=len(state.get("kubectl_events") or ""),
     )
 
-    ollama = get_ollama_client()
+    ollama = get_gemini_client()  # Using Gemini for faster testing
 
     # Build user prompt with context
     user_prompt = RCA_USER_PROMPT_TEMPLATE.format(
