@@ -17,7 +17,7 @@ class GeminiClient:
 
     def __init__(self, api_key: str | None = None):
         """Initialize Gemini client."""
-        self.api_key = api_key or os.getenv("GEMINI_API_KEY") or "AIzaSyAktKrrmrv3fUamM1jGFOQDbc1N-M6ndjM"
+        self.api_key = api_key or os.getenv("GEMINI_API_KEY")
         if not self.api_key:
             raise ValueError("GEMINI_API_KEY environment variable not set")
 
