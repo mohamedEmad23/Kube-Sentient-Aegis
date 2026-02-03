@@ -61,7 +61,7 @@ HEALTH_THRESHOLD = SHADOW_HEALTH_PASS_THRESHOLD  # Alias for backwards compatibi
 K8S_NAME_MAX_LENGTH = 63
 DEFAULT_HTTP_PORT = 80
 VCLUSTER_KUBECONFIG_NAME = "vc-shadow-kubeconfig"
-VCLUSTER_KUBECONFIG_SECRET_MAX_ATTEMPTS = 3
+VCLUSTER_KUBECONFIG_SECRET_MAX_ATTEMPTS = 10
 SMOKE_TEST_IMAGE = "curlimages/curl:8.5.0"
 LOAD_TEST_IMAGE = "locustio/locust:2.42.6"
 DEFAULT_SMOKE_PATHS = ["/health", "/ready", "/healthz", "/readyz"]
@@ -187,7 +187,7 @@ class ShadowManager:
             if env.status in (ShadowStatus.CREATING, ShadowStatus.READY, ShadowStatus.TESTING)
         )
 
-    async def create_shadow(
+    async def create_shadow(  # noqa: PLR0915
         self,
         source_namespace: str,
         source_resource: str,
@@ -215,6 +215,21 @@ class ShadowManager:
         if self.active_count >= self.max_concurrent:
             log.error("shadow_max_concurrent_exceeded", max_concurrent=self.max_concurrent)
             raise RuntimeError(f"Max concurrent shadows ({self.max_concurrent}) exceeded")
+
+        # Check if cluster has sufficient resources before attempting creation
+        if self.runtime == SandBoxRuntime.VCLUSTER.value:
+            resource_check = await self._check_cluster_resources()
+            if not resource_check["sufficient"]:
+                log.warning(
+                    "shadow_resource_warning",
+                    message=(
+                        f"Cluster may have insufficient resources for vCluster creation. "
+                        f"Available: {resource_check['available_cpu']} CPU, "
+                        f"{resource_check['available_memory']} Memory"
+                    ),
+                    **resource_check,
+                )
+                # Continue anyway but log warning
 
         # Generate shadow ID if not provided
         if not shadow_id:
@@ -746,7 +761,10 @@ class ShadowManager:
         sanitized_id = self._sanitize_name(shadow_id)
         host_namespace = self._build_shadow_namespace(sanitized_id)
         try:
-            namespace = self._core_api.read_namespace(host_namespace)
+            namespace = cast(
+                client.V1Namespace,
+                self._core_api.read_namespace(host_namespace),
+            )
         except ApiException as exc:
             if exc.status == HTTP_NOT_FOUND:
                 return None
@@ -953,7 +971,7 @@ class ShadowManager:
                         attempt=attempt + 1,
                         error=str(e),
                     )
-                    await asyncio.sleep(5)
+                    await asyncio.sleep(8)
                 else:
                     log.warning(
                         "vcluster_kubeconfig_secret_failed",
@@ -1037,7 +1055,7 @@ class ShadowManager:
             log.exception("vcluster_kubeconfig_secret_list_failed", error=str(e))
             raise RuntimeError(msg) from e
 
-        for secret in secrets.items:
+        for secret in secrets.items or []:
             if not secret.metadata or not secret.data:
                 continue
             for key in ("config", "kubeconfig", "kubeconfig.yaml"):
@@ -1216,7 +1234,7 @@ class ShadowManager:
                 return None, None
 
             candidates: list[client.V1Service] = []
-            for svc in services.items:
+            for svc in services.items or []:
                 if not svc.metadata:
                     continue
                 labels = svc.metadata.labels or {}
@@ -1230,7 +1248,7 @@ class ShadowManager:
                     candidates.append(svc)
 
             service = candidates[0] if candidates else None
-            if service:
+            if service and service.metadata:
                 port = self._select_vcluster_service_port(
                     service.spec.ports if service.spec else None
                 )
@@ -1341,14 +1359,14 @@ class ShadowManager:
         finally:
             self._dispose_shadow_clients(env.id)
 
-    async def _wait_for_vcluster_resources(
+    async def _wait_for_vcluster_resources(  # noqa: PLR0912
         self,
         shadow_name: str,
         namespace: str,
-        timeout_seconds: int = 120,
+        timeout_seconds: int = 300,
         poll_interval: float = 3.0,
     ) -> None:
-        """Wait for vCluster StatefulSet and Service to be created and ready.
+        """Wait for vCluster Deployment/StatefulSet and Service to be created and ready.
 
         Args:
             shadow_name: Name of the vCluster
@@ -1357,56 +1375,98 @@ class ShadowManager:
             poll_interval: Seconds between checks
         """
         start = time.monotonic()
-        statefulset_ready = False
+        workload_ready = False
         service_ready = False
 
         while time.monotonic() - start < timeout_seconds:
-            # Check for StatefulSet
-            if not statefulset_ready:
+            # Check for Deployment (vCluster 0.31+) or StatefulSet (older versions)
+            if not workload_ready:
+                # Try Deployment first (newer vCluster versions)
                 try:
-                    statefulsets = await self._call_api(
-                        self._apps_api.list_namespaced_stateful_set,
+                    deployments = await self._call_api(
+                        self._apps_api.list_namespaced_deployment,
                         namespace,
                     )
-                    for sts in statefulsets.items:
-                        if not sts.metadata:
+                    for dep in deployments.items:
+                        if not dep.metadata:
                             continue
-                        labels = sts.metadata.labels or {}
+                        labels = dep.metadata.labels or {}
                         if (
                             labels.get("app.kubernetes.io/instance") == shadow_name
-                            or sts.metadata.name == shadow_name
-                            or shadow_name in sts.metadata.name
+                            or dep.metadata.name == shadow_name
+                            or shadow_name in dep.metadata.name
                         ):
-                            # Check if StatefulSet is ready
-                            # Use getattr for compatibility with different client versions
                             ready_count = (
-                                getattr(sts.status, "ready_replicas", 0) if sts.status else 0
+                                getattr(dep.status, "ready_replicas", 0) if dep.status else 0
                             )
                             if ready_count and ready_count > 0:
-                                statefulset_ready = True
+                                workload_ready = True
                                 log.debug(
-                                    "vcluster_statefulset_ready",
+                                    "vcluster_deployment_ready",
                                     shadow=shadow_name,
                                     namespace=namespace,
                                     ready_replicas=ready_count,
                                 )
                             else:
-                                # Log current state for debugging
                                 log.debug(
-                                    "vcluster_statefulset_not_ready",
+                                    "vcluster_deployment_not_ready",
                                     shadow=shadow_name,
                                     ready_replicas=ready_count,
-                                    replicas=getattr(sts.status, "replicas", 0)
-                                    if sts.status
+                                    replicas=getattr(dep.status, "replicas", 0)
+                                    if dep.status
                                     else 0,
                                 )
                             break
                 except ApiException as exc:
                     log.debug(
-                        "vcluster_statefulset_check_failed",
+                        "vcluster_deployment_check_failed",
                         shadow=shadow_name,
                         error=str(exc),
                     )
+
+                # Fallback to StatefulSet check (older vCluster versions)
+                if not workload_ready:
+                    try:
+                        statefulsets = await self._call_api(
+                            self._apps_api.list_namespaced_stateful_set,
+                            namespace,
+                        )
+                        for sts in statefulsets.items:
+                            if not sts.metadata:
+                                continue
+                            labels = sts.metadata.labels or {}
+                            if (
+                                labels.get("app.kubernetes.io/instance") == shadow_name
+                                or sts.metadata.name == shadow_name
+                                or shadow_name in sts.metadata.name
+                            ):
+                                ready_count = (
+                                    getattr(sts.status, "ready_replicas", 0) if sts.status else 0
+                                )
+                                if ready_count and ready_count > 0:
+                                    workload_ready = True
+                                    log.debug(
+                                        "vcluster_statefulset_ready",
+                                        shadow=shadow_name,
+                                        namespace=namespace,
+                                        ready_replicas=ready_count,
+                                    )
+                                else:
+                                    log.debug(
+                                        "vcluster_statefulset_not_ready",
+                                        shadow=shadow_name,
+                                        ready_replicas=ready_count,
+                                        replicas=getattr(sts.status, "replicas", 0)
+                                        if sts.status
+                                        else 0,
+                                    )
+                                break
+                    except ApiException as exc:
+                        log.debug(
+                            "vcluster_statefulset_check_failed",
+                            shadow=shadow_name,
+                            error=str(exc),
+                        )
 
             # Check for Service
             if not service_ready:
@@ -1438,7 +1498,7 @@ class ShadowManager:
                         error=str(exc),
                     )
 
-            if statefulset_ready and service_ready:
+            if workload_ready and service_ready:
                 log.info(
                     "vcluster_resources_ready",
                     shadow=shadow_name,
@@ -1449,15 +1509,240 @@ class ShadowManager:
 
             await asyncio.sleep(poll_interval)
 
-        error_msg = f"vCluster resources not ready after {timeout_seconds}s (StatefulSet: {statefulset_ready}, Service: {service_ready})"
+        # Diagnose why workload is not ready
+        diagnostic_info = await self._diagnose_vcluster_failure(shadow_name, namespace)
+
+        error_msg = f"vCluster resources not ready after {timeout_seconds}s (Workload: {workload_ready}, Service: {service_ready})"
+        if diagnostic_info:
+            error_msg = f"{error_msg}\n{diagnostic_info}"
+
         log.error(
             "vcluster_resources_timeout",
             shadow_id=shadow_name,
             timeout=timeout_seconds,
-            statefulset_ready=statefulset_ready,
+            workload_ready=workload_ready,
             service_ready=service_ready,
+            diagnostic=diagnostic_info,
         )
         raise RuntimeError(error_msg)
+
+    async def _diagnose_vcluster_failure(
+        self,
+        shadow_name: str,
+        namespace: str,
+    ) -> str:
+        """Diagnose why a vCluster failed to become ready.
+
+        Returns detailed diagnostic information about pod status, events, and resource constraints.
+        """
+        diagnostics: list[str] = []
+
+        try:
+            # Check StatefulSet pods
+            pods = await self._call_api(
+                self._core_api.list_namespaced_pod,
+                namespace,
+                label_selector=f"app.kubernetes.io/instance={shadow_name}",
+            )
+
+            if not pods.items:
+                diagnostics.append(
+                    f"No pods found for vCluster '{shadow_name}' in namespace '{namespace}'"
+                )
+                return "\n".join(diagnostics)
+
+            for pod in pods.items:
+                if not pod.metadata or not pod.metadata.name:
+                    continue
+
+                pod_name = pod.metadata.name
+                pod_status = pod.status
+
+                # Check pod phase
+                if pod_status:
+                    phase = pod_status.phase or "Unknown"
+                    diagnostics.append(f"Pod '{pod_name}' phase: {phase}")
+
+                    # Check for pending state with reasons
+                    if phase == "Pending":
+                        # Check conditions for reasons
+                        diagnostics.extend(
+                            f"  Condition '{condition.type}': {condition.reason} - {condition.message}"
+                            for condition in pod_status.conditions or []
+                            if condition.status == "False"
+                        )
+
+                        # Check container statuses
+                        for container_status in pod_status.container_statuses or []:
+                            if container_status.state and container_status.state.waiting:
+                                waiting = container_status.state.waiting
+                                diagnostics.append(
+                                    f"  Container '{container_status.name}' waiting: {waiting.reason} - {waiting.message}"
+                                )
+
+                    # Check for failed containers
+                    if phase in ("Failed", "Unknown"):
+                        for container_status in pod_status.container_statuses or []:
+                            if container_status.state and container_status.state.terminated:
+                                terminated = container_status.state.terminated
+                                diagnostics.append(
+                                    f"  Container '{container_status.name}' terminated: exit={terminated.exit_code}, reason={terminated.reason}"
+                                )
+
+            # Check events for the namespace
+            events = await self._call_api(
+                self._core_api.list_namespaced_event,
+                namespace,
+                field_selector="type=Warning",
+            )
+
+            if events.items:
+                diagnostics.append("\nRecent Warning Events:")
+                diagnostics.extend(
+                    f"  [{event.metadata.creation_timestamp}] {event.reason}: {event.message}"
+                    for event in events.items[-5:]
+                    if event.metadata and event.metadata.creation_timestamp
+                )
+
+            # Check node resources
+            nodes = await self._call_api(self._core_api.list_node)
+            if nodes.items:
+                diagnostics.append("\nNode Resources:")
+                for node in nodes.items:
+                    if not node.metadata or not node.status:
+                        continue
+
+                    node_name = node.metadata.name
+                    allocatable = node.status.allocatable or {}
+                    diagnostics.append(f"  Node '{node_name}':")
+                    diagnostics.append(f"    Allocatable CPU: {allocatable.get('cpu', 'N/A')}")
+                    diagnostics.append(
+                        f"    Allocatable Memory: {allocatable.get('memory', 'N/A')}"
+                    )
+
+        except ApiException as exc:
+            diagnostics.append(f"Error gathering diagnostics: {exc}")
+            log.debug("vcluster_diagnostic_failed", shadow=shadow_name, error=str(exc))
+
+        return "\n".join(diagnostics) if diagnostics else "No diagnostic information available"
+
+    async def _check_cluster_resources(self) -> dict[str, Any]:
+        """Check if cluster has sufficient resources for vCluster creation.
+
+        Returns:
+            Dictionary with resource availability information:
+            - sufficient: bool indicating if resources are adequate
+            - available_cpu: Total allocatable CPU across nodes
+            - available_memory: Total allocatable memory across nodes
+            - node_count: Number of nodes in cluster
+        """
+        try:
+            nodes = await self._call_api(self._core_api.list_node)
+
+            if not nodes.items:
+                return {
+                    "sufficient": False,
+                    "available_cpu": "0",
+                    "available_memory": "0",
+                    "node_count": 0,
+                    "reason": "No nodes found",
+                }
+
+            total_cpu = 0.0
+            total_memory_bytes = 0
+            node_count = len(nodes.items)
+
+            for node in nodes.items:
+                if not node.status or not node.status.allocatable:
+                    continue
+
+                allocatable = node.status.allocatable
+
+                # Parse CPU (e.g., "2" or "2000m")
+                cpu_str = allocatable.get("cpu", "0")
+                if cpu_str.endswith("m"):
+                    total_cpu += float(cpu_str[:-1]) / 1000
+                else:
+                    total_cpu += float(cpu_str)
+
+                # Parse Memory (e.g., "8Gi", "8192Mi", "8589934592")
+                memory_str = allocatable.get("memory", "0")
+                total_memory_bytes += self._parse_memory_to_bytes(memory_str)
+
+            # vCluster needs at least 50m CPU and 128Mi memory
+            min_cpu = 0.05  # 50m
+            min_memory_bytes = 128 * 1024 * 1024  # 128Mi
+
+            sufficient = total_cpu >= min_cpu and total_memory_bytes >= min_memory_bytes
+
+            return {
+                "sufficient": sufficient,
+                "available_cpu": f"{total_cpu:.2f}",
+                "available_memory": self._format_bytes(total_memory_bytes),
+                "node_count": node_count,
+                "required_cpu": "50m",
+                "required_memory": "128Mi",
+            }
+
+        except ApiException as exc:
+            log.warning("cluster_resource_check_failed", error=str(exc))
+            # Assume sufficient if check fails to not block creation
+            return {
+                "sufficient": True,
+                "available_cpu": "unknown",
+                "available_memory": "unknown",
+                "node_count": 0,
+                "reason": f"Check failed: {exc}",
+            }
+
+    @staticmethod
+    def _parse_memory_to_bytes(memory_str: str) -> int:
+        """Parse Kubernetes memory format to bytes.
+
+        Supports: Ki, Mi, Gi, Ti, Pi, Ei (IEC binary) and k, M, G, T, P, E (SI decimal)
+        """
+        if not memory_str:
+            return 0
+
+        units = {
+            "Ki": 1024,
+            "Mi": 1024**2,
+            "Gi": 1024**3,
+            "Ti": 1024**4,
+            "Pi": 1024**5,
+            "Ei": 1024**6,
+            "k": 1000,
+            "M": 1000**2,
+            "G": 1000**3,
+            "T": 1000**4,
+            "P": 1000**5,
+            "E": 1000**6,
+        }
+
+        for unit, multiplier in units.items():
+            if memory_str.endswith(unit):
+                try:
+                    value = float(memory_str[: -len(unit)])
+                    return int(value * multiplier)
+                except ValueError:
+                    return 0
+
+        # No unit, assume bytes
+        try:
+            return int(memory_str)
+        except ValueError:
+            return 0
+
+    @staticmethod
+    def _format_bytes(bytes_value: int) -> str:
+        """Format bytes to human-readable format."""
+        BYTES_PER_UNIT = 1024  # noqa: N806
+        value = float(bytes_value)
+        for unit in ["", "Ki", "Mi", "Gi", "Ti", "Pi"]:
+            if value < BYTES_PER_UNIT:
+                return f"{value:.1f}{unit}B" if unit else f"{int(value)}B"
+            value /= BYTES_PER_UNIT
+        return f"{value:.1f}EiB"
 
     async def _wait_for_vcluster_api(
         self,
@@ -1684,7 +1969,7 @@ class ShadowManager:
             await self._call_api(source_core_api.list_namespaced_service, source_namespace),
         )
 
-        for service in services.items:
+        for service in services.items or []:
             selector = service.spec.selector if service.spec else None
             if not selector or not all(pod_labels.get(k) == v for k, v in selector.items()):
                 continue
@@ -2079,13 +2364,13 @@ class ShadowManager:
         )
 
         service = None
-        for candidate in services.items:
+        for candidate in services.items or []:
             if candidate.metadata and candidate.metadata.name == env.source_resource:
                 service = candidate
                 break
 
         if service is None:
-            for candidate in services.items:
+            for candidate in services.items or []:
                 selector = candidate.spec.selector if candidate.spec else None
                 if selector and all(pod_labels.get(k) == v for k, v in selector.items()):
                     service = candidate

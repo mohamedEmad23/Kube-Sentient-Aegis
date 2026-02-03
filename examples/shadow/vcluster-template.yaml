@@ -23,19 +23,23 @@ controlPlane:
       enabled: true
 
   # Resource limits for vCluster control plane
+  # Optimized for local development and resource-constrained environments
   statefulSet:
     resources:
       requests:
-        cpu: "100m"
-        memory: "256Mi"
+        cpu: "50m"        # Reduced from 100m for low-resource environments
+        memory: "128Mi"   # Reduced from 256Mi
       limits:
-        cpu: "500m"
+        cpu: "500m"       # Keep reasonable limit for bursting
         memory: "512Mi"
 
     # Faster startup for demos
     persistence:
       volumeClaim:
         enabled: false  # Use emptyDir for faster creation
+
+    # Image pull policy for faster startup
+    imagePullPolicy: IfNotPresent
 
 # Networking
 networking:
