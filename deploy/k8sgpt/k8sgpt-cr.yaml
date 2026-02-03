@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # K8sGPT Custom Resource for AEGIS Integration
 #
 # This CR tells the K8sGPT operator what to analyze and which AI backend to use.
@@ -96,3 +97,108 @@ type: Opaque
 stringData:
   # Dummy API key for Ollama (not actually used)
   apikey: "ollama-local-no-auth-required"  # pragma: allowlist secret
+=======
+# K8sGPT Custom Resource for AEGIS Integration
+#
+# This CR tells the K8sGPT operator what to analyze and which AI backend to use.
+# Apply after installing the K8sGPT operator.
+#
+# Usage:
+#   kubectl apply -f k8sgpt-cr.yaml
+
+apiVersion: core.k8sgpt.ai/v1alpha1
+kind: K8sGPT
+metadata:
+  name: k8sgpt-aegis
+  namespace: k8sgpt-system
+spec:
+  # AI Backend Configuration
+  # 'localai' is compatible with Ollama's OpenAI API emulation
+  ai:
+    enabled: true
+    backend: localai
+    model: llama3.2:latest
+    baseUrl: http://host.minikube.internal:11434/v1
+    # Secret with API key (can be dummy for Ollama)
+    secret:
+      name: k8sgpt-secret
+      key: apikey
+    # Anonymize sensitive data before sending to AI
+    anonymize:
+      enabled: true
+
+  # Analyzers to enable
+  # Each analyzer checks for specific issues
+  filters:
+    # Core workload analyzers
+    - Pod
+    - Deployment
+    - ReplicaSet
+    - StatefulSet
+    - DaemonSet
+
+    # Networking analyzers
+    - Service
+    - Ingress
+    - NetworkPolicy
+
+    # Storage analyzers
+    - PersistentVolumeClaim
+
+    # Scheduling analyzers
+    - Node
+    - HorizontalPodAutoscaler
+    - PodDisruptionBudget
+
+    # Job analyzers
+    - Job
+    - CronJob
+
+    # Gateway API analyzers (if installed)
+    # - Gateway
+    # - HTTPRoute
+
+    # Admission webhook analyzers
+    # - MutatingWebhookConfiguration
+    # - ValidatingWebhookConfiguration
+
+  # Sink for notifications (optional)
+  # sink:
+  #   type: slack
+  #   webhook: https://hooks.slack.com/services/xxx/yyy/zzz
+
+  # Extra environment variables
+  extraOptions:
+    backstage:
+      enabled: false
+
+  # Target namespace(s) to analyze
+  # Empty = all namespaces
+  targetNamespace: ""
+
+  # Language for AI explanations
+  kubernetesDoc:
+    enabled: true
+
+  # Cache settings
+  noCache: false
+
+  # Repository for custom analyzers (optional)
+  repository: ""
+
+  # Version of the K8sGPT image (uses operator default if empty)
+  version: ""
+
+---
+# Secret for K8sGPT (required even for Ollama)
+# Ollama doesn't require auth but K8sGPT expects a secret
+apiVersion: v1
+kind: Secret
+metadata:
+  name: k8sgpt-secret
+  namespace: k8sgpt-system
+type: Opaque
+stringData:
+  # Dummy API key for Ollama (not actually used)
+  apikey: "ollama-local-no-auth-required"  # pragma: allowlist secret
+>>>>>>> main

@@ -27,7 +27,7 @@ repos:
         types: [python]
       - id: check-yaml
         args: [--unsafe]  # Allow custom YAML tags for K8s
-        exclude: ^(docs/|\.vscode/|README\.md|.*\.md|deploy/helm/.*)
+        exclude: ^(docs/|\.vscode/|README\.md|.*\.md)
       - id: check-toml
         exclude: ^(docs/|\.vscode/|README\.md|.*\.md)
       - id: check-json
@@ -63,7 +63,6 @@ repos:
     hooks:
       - id: mypy
         additional_dependencies:
-          - kopf>=1.37.2
           - pydantic>=2.10.0
           - pydantic-settings>=2.0.0
           - types-requests
@@ -127,7 +126,7 @@ repos:
     hooks:
       - id: helm-lint
         name: Helm Lint
-        entry: bash -c 'command -v helm >/dev/null 2>&1 && helm lint deploy/helm/aegis/ || echo "Helm not installed, skipping..."'
+        entry: bash -c 'command -v helm >/dev/null 2>&1 && helm lint deploy/helm/aegis-operator/ || echo "Helm not installed, skipping..."'
         language: system
         files: ^deploy/helm/
         pass_filenames: false

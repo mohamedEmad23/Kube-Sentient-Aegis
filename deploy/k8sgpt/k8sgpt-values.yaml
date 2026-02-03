@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # K8sGPT Operator Helm Values for AEGIS Integration
 #
 # NOTE:
@@ -21,3 +22,110 @@ grafanaDashboard:
 
 controllerManager:
   replicas: 1
+=======
+# K8sGPT Operator Helm Values for AEGIS Integration
+#
+# This configures the K8sGPT operator to work with a local Ollama backend
+# and create Result CRDs that AEGIS can watch.
+#
+# Installation:
+#   helm repo add k8sgpt https://charts.k8sgpt.ai/
+#   helm install k8sgpt-operator k8sgpt/k8sgpt-operator -f k8sgpt-values.yaml -n k8sgpt-system --create-namespace
+
+# ServiceAccount configuration
+serviceAccount:
+  create: true
+  name: "k8sgpt-operator"
+
+# K8sGPT resource configuration
+# This creates a K8sGPT CR that tells the operator how to analyze the cluster
+k8sgpt:
+  # Set to true to create the K8sGPT CR automatically
+  create: true
+
+  # AI Backend Configuration
+  # Using 'localai' backend which is compatible with Ollama's OpenAI API
+  backend: localai
+
+  # Model to use (must match your Ollama model)
+  # Run: ollama pull llama3.2:latest or ollama pull mistral:latest
+  model: llama3.2:latest
+
+  # Ollama API endpoint
+  # If Ollama runs in same cluster: http://ollama.ollama-system.svc:11434/v1
+  # If Ollama runs on host: http://host.minikube.internal:11434/v1
+  baseUrl: http://host.minikube.internal:11434/v1
+
+  # Secret containing the API key (optional for local Ollama)  # pragma: allowlist secret
+  # Create with: kubectl create secret generic k8sgpt-secret --from-literal=apikey=dummy -n k8sgpt-system
+  secretName: k8sgpt-secret  # pragma: allowlist secret
+  secretKey: apikey  # pragma: allowlist secret
+
+  # Analyzers to enable
+  # These determine what K8sGPT looks for in the cluster
+  filters:
+    - Pod
+    - Deployment
+    - ReplicaSet
+    - Service
+    - Ingress
+    - StatefulSet
+    - CronJob
+    - Node
+    - PersistentVolumeClaim
+    - HorizontalPodAutoscaler
+
+  # Sink configuration (optional - for external notifications)
+  # sink:
+  #   type: slack
+  #   webhook: https://hooks.slack.com/...
+
+  # Extra environment variables for the analyzer
+  extraEnv: []
+
+  # Language for AI explanations
+  language: english
+
+  # Enable anonymous data collection (set to false for privacy)
+  noCache: false
+
+  # Version of K8sGPT to use (operator will use its bundled version)
+  version: ""
+
+# Resource limits for the operator
+resources:
+  limits:
+    cpu: 500m
+    memory: 512Mi
+  requests:
+    cpu: 100m
+    memory: 128Mi
+
+# Pod security context
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 65532
+  fsGroup: 65532
+
+# Node selector for operator placement
+nodeSelector: {}
+
+# Tolerations
+tolerations: []
+
+# Affinity rules
+affinity: {}
+
+# Operator log level
+logLevel: info
+
+# Enable leader election for HA
+leaderElection:
+  enabled: true
+
+# RBAC configuration
+rbac:
+  create: true
+  # Extra rules for the operator ClusterRole
+  extraRules: []
+>>>>>>> main
