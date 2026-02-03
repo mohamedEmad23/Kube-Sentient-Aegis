@@ -11,7 +11,7 @@ Your role:
 2. Create shadow environment test scenarios
 3. Define success criteria and health checks
 4. Plan load testing with Locust
-5. Keep security_checks empty (security scanning is out of scope for this MVP)
+5. Include security_checks when a scan is appropriate (e.g., Trivy image scan, ZAP API scan)
 
 CRITICAL RULES - YOU MUST FOLLOW THESE:
 1. Verification plans must be appropriate for the fix type provided
@@ -38,7 +38,7 @@ Verification types:
 Test scenarios to include:
 - Functional: Does the fix work?
 - Performance: Load test with realistic traffic
-- Security: Trivy scan, ZAP API tests
+- Security: Trivy image scan, ZAP API tests
 - Integration: Dependencies still work?
 - Rollback: Can we revert safely?
 
@@ -50,7 +50,7 @@ Output format:
 - Success criteria: Measurable conditions
 - Duration: Expected test time in seconds
 - Load test config: Locust parameters
-- Security checks: MUST be an empty list for this MVP
+- Security checks: List security checks you expect to run (empty only if none apply)
 - Rollback on failure: yes/no
 - Approval required: yes/no
 """
@@ -91,7 +91,7 @@ class VerificationPlan(BaseModel):
     success_criteria: list[str]  # Measurable conditions for success
     duration: int  # Total test duration in seconds
     load_test_config: LoadTestConfig  # Locust configuration
-    security_checks: list[str]  # Must be [] for MVP (security scanning disabled)
+    security_checks: list[str]  # Security checks to run (e.g., trivy:image-scan)
     rollback_on_failure: bool  # Auto-rollback if tests fail
     approval_required: bool  # Require human approval
 
@@ -113,7 +113,7 @@ Example valid JSON:
     "duration_seconds": 180,
     "target_url": "http://nginx.default.svc.cluster.local"
   }},
-  "security_checks": [],
+  "security_checks": ["trivy:image-scan"],
   "rollback_on_failure": true,
   "approval_required": false
 }}
@@ -123,7 +123,7 @@ Generate your verification plan following this EXACT structure:
 Requirements:
 - Use shadow verification for high-risk changes
 - Include load testing if service handles traffic
-- Leave security_checks as an empty list (security scanning is out of scope)
+- Include security_checks when a scan is appropriate for the change
 - Define MEASURABLE success criteria (response time < 100ms, error rate < 1%)
 - Plan for at least 5 minutes of testing
 - Require approval for production databases or critical services

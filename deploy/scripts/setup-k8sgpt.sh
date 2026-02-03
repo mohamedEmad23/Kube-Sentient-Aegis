@@ -11,8 +11,9 @@
 #
 # Usage:
 #   ./setup-k8sgpt.sh
+#   K8SGPT_APPLY_CR=false ./setup-k8sgpt.sh  # install operator only
 
-set -e
+set -euo pipefail
 
 # Colors for output
 RED='\033[0;31m'
@@ -42,6 +43,7 @@ K8SGPT_NAMESPACE="k8sgpt-system"
 OLLAMA_HOST="${OLLAMA_HOST:-host.minikube.internal}"
 OLLAMA_PORT="${OLLAMA_PORT:-11434}"
 OLLAMA_MODEL="${OLLAMA_MODEL:-llama3.2:latest}"
+K8SGPT_APPLY_CR="${K8SGPT_APPLY_CR:-true}"
 
 # Check prerequisites
 check_prerequisites() {
@@ -100,7 +102,7 @@ add_helm_repo() {
 create_namespace() {
     log_info "Creating namespace ${K8SGPT_NAMESPACE}..."
 
-    kubectl create namespace ${K8SGPT_NAMESPACE} --dry-run=client -o yaml | kubectl apply -f -
+    kubectl create namespace "${K8SGPT_NAMESPACE}" --dry-run=client -o yaml | kubectl apply -f -
 
     log_success "Namespace created"
 }
@@ -111,7 +113,7 @@ create_secret() {
 
     kubectl create secret generic k8sgpt-secret \
         --from-literal=apikey=ollama-local-no-auth-required \
-        --namespace ${K8SGPT_NAMESPACE} \
+        --namespace "${K8SGPT_NAMESPACE}" \
         --dry-run=client -o yaml | kubectl apply -f -
 
     log_success "Secret created"
@@ -127,17 +129,13 @@ install_operator() {
 
     if [[ -f "${VALUES_FILE}" ]]; then
         helm upgrade --install k8sgpt-operator k8sgpt/k8sgpt-operator \
-            --namespace ${K8SGPT_NAMESPACE} \
+            --namespace "${K8SGPT_NAMESPACE}" \
             --values "${VALUES_FILE}" \
             --wait
     else
         log_warning "Values file not found at ${VALUES_FILE}, using defaults"
         helm upgrade --install k8sgpt-operator k8sgpt/k8sgpt-operator \
-            --namespace ${K8SGPT_NAMESPACE} \
-            --set k8sgpt.backend=localai \
-            --set k8sgpt.model=${OLLAMA_MODEL} \
-            --set k8sgpt.baseUrl=http://${OLLAMA_HOST}:${OLLAMA_PORT}/v1 \
-            --set k8sgpt.secretName=k8sgpt-secret \
+            --namespace "${K8SGPT_NAMESPACE}" \
             --wait
     fi
 
@@ -162,6 +160,7 @@ metadata:
   name: k8sgpt-aegis
   namespace: ${K8SGPT_NAMESPACE}
 spec:
+  version: v0.4.27
   ai:
     enabled: true
     backend: localai
@@ -170,8 +169,6 @@ spec:
     secret:
       name: k8sgpt-secret
       key: apikey
-    anonymize:
-      enabled: true
   filters:
     - Pod
     - Deployment
@@ -192,31 +189,77 @@ EOF
 wait_for_operator() {
     log_info "Waiting for K8sGPT operator to be ready..."
 
-    kubectl wait --for=condition=available deployment/k8sgpt-operator \
-        --namespace ${K8SGPT_NAMESPACE} \
-        --timeout=120s
+    # Resolve the deployment name dynamically (chart name can vary by version)
+    DEPLOYMENT_NAME=$(kubectl get deployments -n "${K8SGPT_NAMESPACE}" \
+        -l app.kubernetes.io/instance=k8sgpt-operator \
+        -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
 
-    log_success "K8sGPT operator is ready"
+    if [[ -z "${DEPLOYMENT_NAME}" ]]; then
+        DEPLOYMENT_NAME=$(kubectl get deployments -n "${K8SGPT_NAMESPACE}" \
+            -l app.kubernetes.io/name=k8sgpt-operator \
+            -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
+    fi
+
+    if [[ -z "${DEPLOYMENT_NAME}" ]]; then
+        DEPLOYMENT_NAME=$(kubectl get deployments -n "${K8SGPT_NAMESPACE}" \
+            -l app.kubernetes.io/part-of=k8sgpt \
+            -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
+    fi
+
+    if [[ -z "${DEPLOYMENT_NAME}" ]]; then
+        log_warning "Could not resolve K8sGPT operator deployment by labels."
+        log_info "Available deployments in ${K8SGPT_NAMESPACE}:"
+        kubectl get deployments -n "${K8SGPT_NAMESPACE}" || true
+        log_error "Please set DEPLOYMENT_NAME manually and rerun."
+        exit 1
+    fi
+
+    kubectl wait --for=condition=available "deployment/${DEPLOYMENT_NAME}" \
+        --namespace "${K8SGPT_NAMESPACE}" \
+        --timeout=180s
+
+    log_success "K8sGPT operator is ready: ${DEPLOYMENT_NAME}"
 }
 
 # Verify installation
 verify_installation() {
     log_info "Verifying installation..."
 
-    # Check operator pod
-    OPERATOR_POD=$(kubectl get pods -n ${K8SGPT_NAMESPACE} -l app.kubernetes.io/name=k8sgpt-operator -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || echo "")
+    # Check operator pod (resolve deployment and use its selector)
+    DEPLOYMENT_NAME=$(kubectl get deployments -n "${K8SGPT_NAMESPACE}" \
+        -l app.kubernetes.io/instance=k8sgpt-operator \
+        -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
+    if [[ -z "${DEPLOYMENT_NAME}" ]]; then
+        DEPLOYMENT_NAME=$(kubectl get deployments -n "${K8SGPT_NAMESPACE}" \
+            -l app.kubernetes.io/name=k8sgpt-operator \
+            -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
+    fi
+    if [[ -z "${DEPLOYMENT_NAME}" ]]; then
+        DEPLOYMENT_NAME=$(kubectl get deployments -n "${K8SGPT_NAMESPACE}" \
+            -l app.kubernetes.io/part-of=k8sgpt \
+            -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)
+    fi
+
+    OPERATOR_POD=""
+    if [[ -n "${DEPLOYMENT_NAME}" ]]; then
+        SELECTOR=$(kubectl get deployment "${DEPLOYMENT_NAME}" -n "${K8SGPT_NAMESPACE}" -o jsonpath='{.spec.selector.matchLabels}' 2>/dev/null || echo "")
+        if [[ -n "${SELECTOR}" ]]; then
+            LABELS=$(echo "${SELECTOR}" | tr -d '{}"' | sed 's/:/=/g' | tr ',' '\n' | xargs | tr ' ' ',')
+            OPERATOR_POD=$(kubectl get pods -n "${K8SGPT_NAMESPACE}" -l "${LABELS}" -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || echo "")
+        fi
+    fi
 
     if [[ -n "${OPERATOR_POD}" ]]; then
         log_success "Operator pod: ${OPERATOR_POD}"
-        kubectl get pods -n ${K8SGPT_NAMESPACE}
+        kubectl get pods -n "${K8SGPT_NAMESPACE}"
     else
         log_warning "Operator pod not found"
     fi
 
     # Check K8sGPT CR
-    if kubectl get k8sgpt -n ${K8SGPT_NAMESPACE} &> /dev/null; then
+    if kubectl get k8sgpt -n "${K8SGPT_NAMESPACE}" &> /dev/null; then
         log_success "K8sGPT CR exists"
-        kubectl get k8sgpt -n ${K8SGPT_NAMESPACE}
+        kubectl get k8sgpt -n "${K8SGPT_NAMESPACE}"
     else
         log_warning "K8sGPT CR not found"
     fi
@@ -298,7 +341,11 @@ main() {
     create_secret
     install_operator
     wait_for_operator
-    apply_k8sgpt_cr
+    if [[ "${K8SGPT_APPLY_CR}" == "true" ]]; then
+        apply_k8sgpt_cr
+    else
+        log_warning "Skipping K8sGPT CR creation (K8SGPT_APPLY_CR=false)"
+    fi
     verify_installation
 
     echo ""

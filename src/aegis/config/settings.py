@@ -48,6 +48,14 @@ class SandBoxRuntime(str, Enum):
     DOCKER = "docker"
 
 
+class ComputeMode(str, Enum):
+    """Compute mode selection."""
+
+    AUTO = "auto"
+    GPU = "gpu"
+    CPU = "cpu"
+
+
 # ============================================================================
 # SETTINGS MODELS - Organized by domain
 # ============================================================================
@@ -117,11 +125,11 @@ class KubernetesSettings(BaseSettings):
         default=False,
         description="Use in-cluster authentication when running in K8s pod",
     )
-    kubeconfig_path: None = Field(
+    kubeconfig_path: str | None = Field(
         default=None,
         description="Path to kubeconfig file (auto-detected if not set)",
     )
-    context: None = Field(
+    context: str | None = Field(
         default=None,
         description="Kubernetes context name",
     )
@@ -152,6 +160,10 @@ class ShadowEnvironmentSettings(BaseSettings):
         case_sensitive=False,
     )
 
+    enabled: bool = Field(
+        default=True,
+        description="Enable shadow verification workflows",
+    )
     runtime: SandBoxRuntime = Field(
         default=SandBoxRuntime.VCLUSTER,
         description="Virtual cluster runtime",
@@ -174,7 +186,7 @@ class ShadowEnvironmentSettings(BaseSettings):
         description="Max time to wait for verification to complete",
         ge=60,
     )
-    storage_class: None = Field(
+    storage_class: str | None = Field(
         default=None,
         description="Storage class for persistent volumes in shadow clusters",
     )
@@ -190,6 +202,30 @@ class ShadowEnvironmentSettings(BaseSettings):
         default=3,
         description="Max concurrent shadow environments",
         ge=1,
+    )
+
+
+class IncidentSettings(BaseSettings):
+    """Incident workflow configuration."""
+
+    model_config = SettingsConfigDict(
+        env_prefix="INCIDENT_",
+        case_sensitive=False,
+    )
+
+    auto_fix_enabled: bool = Field(
+        default=False,
+        description="Automatically apply fixes after approval",
+    )
+    approval_timeout_minutes: int = Field(
+        default=15,
+        description="Minutes to wait for human approval before auto-reject",
+        ge=1,
+    )
+    post_fix_monitoring_seconds: int = Field(
+        default=300,
+        description="Post-fix monitoring window in seconds",
+        ge=30,
     )
 
 
@@ -209,6 +245,14 @@ class SecuritySettings(BaseSettings):
         default="HIGH,CRITICAL",
         description="Comma-separated severity levels (LOW,MEDIUM,HIGH,CRITICAL)",
     )
+    kubesec_enabled: bool = Field(
+        default=True,
+        description="Enable Kubesec manifest security scanning",
+    )
+    kubesec_min_score: int = Field(
+        default=0,
+        description="Minimum Kubesec score required to pass",
+    )
     zap_enabled: bool = Field(
         default=True,
         description="Enable OWASP ZAP dynamic scanning",
@@ -220,6 +264,18 @@ class SecuritySettings(BaseSettings):
     falco_enabled: bool = Field(
         default=True,
         description="Enable Falco runtime security monitoring",
+    )
+    falco_namespace: str = Field(
+        default="falco",
+        description="Namespace where Falco is deployed",
+    )
+    falco_label_selector: str = Field(
+        default="app=falco",
+        description="Label selector for Falco pods",
+    )
+    falco_severity_threshold: str = Field(
+        default="WARNING",
+        description="Minimum Falco severity to consider (WARNING, ERROR, CRITICAL, etc.)",
     )
     exploit_sandbox_enabled: bool = Field(
         default=False,
@@ -270,7 +326,7 @@ class ObservabilitySettings(BaseSettings):
         default=False,
         description="Enable distributed tracing with OpenTelemetry",
     )
-    otel_exporter_otlp_endpoint: None = Field(
+    otel_exporter_otlp_endpoint: str | None = Field(
         default=None,
         description="OTLP collector endpoint (e.g., http://localhost:4317)",
     )
@@ -286,7 +342,7 @@ class ObservabilitySettings(BaseSettings):
         default=False,
         description="Enable Loki log aggregation",
     )
-    loki_url: None = Field(
+    loki_url: str | None = Field(
         default=None,
         description="Grafana Loki push API endpoint",
     )
@@ -304,7 +360,11 @@ class GPUSettings(BaseSettings):
         default=False,
         description="Enable GPU support",
     )
-    device_ids: None = Field(
+    compute_mode: ComputeMode = Field(
+        default=ComputeMode.AUTO,
+        description="Compute mode: auto, gpu, or cpu",
+    )
+    device_ids: str | None = Field(
         default=None,
         description="Comma-separated GPU device IDs (e.g., '0,1,2')",
     )
@@ -460,6 +520,10 @@ class Settings(BaseSettings):
     shadow: ShadowEnvironmentSettings = Field(
         default_factory=ShadowEnvironmentSettings,
         description="Shadow verification configuration",
+    )
+    incident: IncidentSettings = Field(
+        default_factory=IncidentSettings,
+        description="Incident workflow configuration",
     )
     security: SecuritySettings = Field(
         default_factory=SecuritySettings,

@@ -18,7 +18,7 @@ rules:
       - namespaces
       - persistentvolumeclaims
       - nodes
-    verbs: ["get", "list", "watch"]
+    verbs: ["get", "list", "watch", "create", "patch", "update"]
 
   # Secrets - scoped to vCluster kubeconfig
   - apiGroups: [""]
@@ -117,5 +117,5 @@ rules:
   - apiGroups: [""]
     resources:
       - namespaces
-    verbs: ["get", "list", "watch", "create", "delete"]
+    verbs: ["get", "list", "watch", "create", "delete", "patch", "update"]
 {{- end }}

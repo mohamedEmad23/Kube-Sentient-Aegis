@@ -1,6 +1,7 @@
 # K8sGPT Operator Integration for AEGIS
 
 This directory contains the configuration and setup files for integrating the K8sGPT operator with AEGIS.
+The Helm values configure the operator only; AI backend and analyzers are configured via the K8sGPT CR.
 
 ## Architecture Overview
 
@@ -43,8 +44,8 @@ This directory contains the configuration and setup files for integrating the K8
 
 | File | Purpose |
 |------|---------|
-| `k8sgpt-values.yaml` | Helm values for K8sGPT operator installation |
-| `k8sgpt-cr.yaml` | K8sGPT custom resource configuration |
+| `k8sgpt-values.yaml` | Helm values for K8sGPT operator installation (operator only) |
+| `k8sgpt-cr.yaml` | K8sGPT custom resource configuration (AI backend + analyzers) |
 | `k8sgpt_handler.py` | Kopf handler for watching K8sGPT Results |
 | `README.md` | This documentation |
 
@@ -113,6 +114,9 @@ kubectl apply -f k8sgpt-cr.yaml
 kubectl get k8sgpt -n k8sgpt-system
 ```
 
+If you only want on-demand CLI analysis (no continuous operator scans), you can skip
+applying the CR and rely on the AEGIS CLI `k8sgpt analyze` integration.
+
 ### 5. Test the Integration
 
 ```bash
@@ -176,20 +180,12 @@ kopf run deploy/k8sgpt/k8sgpt_handler.py
 
 ### Ollama Connection
 
-The K8sGPT operator needs to reach Ollama. Update `k8sgpt-values.yaml`:
+The K8sGPT analyzer needs to reach Ollama. Update `k8sgpt-cr.yaml`:
 
 ```yaml
-# For minikube (host access)
-k8sgpt:
-  baseUrl: http://host.minikube.internal:11434/v1
-
-# For Ollama running in cluster
-k8sgpt:
-  baseUrl: http://ollama.ollama-system.svc:11434/v1
-
-# For external Ollama
-k8sgpt:
-  baseUrl: http://your-ollama-host:11434/v1
+spec:
+  ai:
+    baseUrl: http://host.minikube.internal:11434/v1
 ```
 
 ### Analyzers
@@ -198,6 +194,7 @@ Configure which Kubernetes resources to analyze in `k8sgpt-cr.yaml`:
 
 ```yaml
 spec:
+  version: v0.4.27
   filters:
     - Pod           # Analyze Pod issues
     - Deployment    # Analyze Deployment issues

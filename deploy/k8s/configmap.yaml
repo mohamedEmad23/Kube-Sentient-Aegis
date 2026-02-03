@@ -8,19 +8,31 @@ metadata:
     app.kubernetes.io/component: operator
 data:
   # Operator settings
-  AEGIS_ENVIRONMENT: "production"
-  AEGIS_SHADOW_MODE_ENABLED: "true"
-  AEGIS_AUTO_FIX_ENABLED: "false"
-  AEGIS_MAX_CONCURRENT_SHADOWS: "3"
+  ENVIRONMENT: "production"
+  DEBUG: "false"
+  SHADOW_ENABLED: "true"
+  SHADOW_RUNTIME: "vcluster"
+  SHADOW_NAMESPACE_PREFIX: "aegis-shadow-"
+  SHADOW_MAX_CONCURRENT_SHADOWS: "3"
+  INCIDENT_AUTO_FIX_ENABLED: "false"
+  INCIDENT_APPROVAL_TIMEOUT_MINUTES: "15"
+  INCIDENT_POST_FIX_MONITORING_SECONDS: "300"
 
   # Kubernetes settings
-  AEGIS_K8S_IN_CLUSTER: "true"
+  K8S_IN_CLUSTER: "true"
 
   # Observability settings
-  AEGIS_OBSERVABILITY_LOG_FORMAT: "json"
-  AEGIS_OBSERVABILITY_LOG_LEVEL: "INFO"
-  AEGIS_OBSERVABILITY_METRICS_ENABLED: "true"
-  AEGIS_OBSERVABILITY_TRACING_ENABLED: "false"
+  OBS_LOG_FORMAT: "json"
+  OBS_LOG_LEVEL: "INFO"
+  OBS_PROMETHEUS_ENABLED: "true"
+  OBS_PROMETHEUS_PORT: "8080"
+  OBS_TRACING_ENABLED: "false"
+  OBS_LOKI_ENABLED: "false"
+  OBS_LOKI_URL: ""
 
   # LLM settings
   OLLAMA_MODEL: "llama3.2"
+
+  # GPU settings
+  GPU_ENABLED: "false"
+  GPU_COMPUTE_MODE: "auto"

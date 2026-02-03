@@ -266,8 +266,7 @@ uv run pytest tests/integration/test_workflow.py::test_verifier_agent_output_str
 
 ```bash
 # Test that mock mode works without cluster
-AEGIS_K8S_IN_CLUSTER=false \
-AEGIS_MOCK_MODE=true \
+K8S_IN_CLUSTER=false \
 uv run pytest tests/integration/test_workflow.py::test_workflow_with_mock_data -v
 
 # Expected: Workflow completes with mock K8sGPT data
@@ -398,7 +397,7 @@ kubectl get crd results.core.k8sgpt.ai
 kubectl apply -k deploy/kustomize/base/
 
 # Or run operator locally pointing to cluster
-AEGIS_K8S_IN_CLUSTER=false \
+K8S_IN_CLUSTER=false \
 uv run python -m aegis.k8s_operator.main &
 
 OPERATOR_PID=$!
@@ -536,7 +535,7 @@ kubectl get pods -n "$SHADOW_NS"
 
 ```bash
 # Start operator with metrics
-AEGIS_K8S_IN_CLUSTER=false \
+K8S_IN_CLUSTER=false \
 uv run python -m aegis.k8s_operator.main &
 
 OPERATOR_PID=$!

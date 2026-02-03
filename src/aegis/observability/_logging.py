@@ -10,10 +10,10 @@ Provides production-ready structured logging using structlog with:
 
 import logging
 import sys
-from typing import Any
+from typing import Any, cast
 
 import structlog
-from structlog.types import FilteringBoundLogger
+from structlog.types import FilteringBoundLogger, Processor
 
 from aegis.config.settings import settings
 
@@ -28,7 +28,7 @@ def configure_logging() -> FilteringBoundLogger:
         FilteringBoundLogger: Configured logger instance
     """
     # Shared processors for both console and JSON output
-    shared_processors = [
+    shared_processors: list[Processor] = [
         structlog.contextvars.merge_contextvars,
         structlog.processors.add_log_level,
         structlog.processors.StackInfoRenderer(),
@@ -36,6 +36,7 @@ def configure_logging() -> FilteringBoundLogger:
     ]
 
     # Determine output format based on environment
+    processors: list[Processor]
     if settings.observability.log_format == "json" or settings.is_production:
         # JSON format for production/aggregation
         processors = [
@@ -74,7 +75,7 @@ def configure_logging() -> FilteringBoundLogger:
         level=logging.getLevelName(settings.observability.log_level.value),
     )
 
-    return structlog.get_logger()
+    return cast(FilteringBoundLogger, structlog.get_logger())
 
 
 def get_logger(name: str | None = None, **initial_context: Any) -> FilteringBoundLogger:
@@ -103,7 +104,7 @@ def get_logger(name: str | None = None, **initial_context: Any) -> FilteringBoun
     if initial_context:
         logger = logger.bind(**initial_context)
 
-    return logger
+    return cast(FilteringBoundLogger, logger)
 
 
 # Initialize logging on module import

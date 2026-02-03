@@ -9,22 +9,23 @@ Commands:
     aegis incident show <id>    - Show incident details
     aegis shadow create         - Create shadow environment
     aegis shadow list           - List shadow environments
+    aegis shadow status <id>    - Show shadow environment status
+    aegis shadow wait <id>      - Wait for shadow environment readiness
     aegis shadow delete <name>  - Delete shadow environment
+    aegis shadow verify         - Verify a shadow environment
     aegis config show           - Show current configuration
     aegis version               - Show version information
 """
 
 import asyncio
 import sys
+import tempfile
 from collections.abc import Callable
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, ParamSpec, TypeVar, cast
 
 import kopf
-
-
-if TYPE_CHECKING:
-    from aegis.shadow.manager import ShadowEnvironment
 import typer
 from kubernetes import client
 from kubernetes import config as k8s_config
@@ -36,11 +37,26 @@ from rich.table import Table
 
 from aegis.agent.graph import analyze_incident
 from aegis.agent.llm.ollama import get_ollama_client
-from aegis.agent.state import FixProposal, IncidentState, VerificationPlan
+from aegis.agent.state import (
+    FixProposal,
+    IncidentState,
+    RCAResult,
+    VerificationPlan,
+)
+from aegis.agent.state import (
+    FixProposal as AgentFixProposal,
+)
 from aegis.config.settings import settings
+from aegis.crd import FixProposal as CRDFixProposal
+from aegis.crd import FixType as CRDFixType
+from aegis.kubernetes.fix_applier import FixResult, get_fix_applier
 from aegis.observability._logging import get_logger
 from aegis.observability._metrics import active_incidents, incidents_detected_total
 from aegis.shadow.manager import get_shadow_manager
+
+
+if TYPE_CHECKING:
+    from aegis.shadow.manager import ShadowEnvironment
 
 
 # HTTP Status Codes
@@ -81,6 +97,7 @@ def typed_callback(
 
     Returns:
         A decorator that registers the callback and preserves types
+
     """
 
     def decorator(func: Callable[P, R]) -> Callable[P, R]:
@@ -107,6 +124,7 @@ def typed_command(
 
     Returns:
         A decorator that registers the command and preserves types
+
     """
 
     def decorator(func: Callable[P, R]) -> Callable[P, R]:
@@ -197,6 +215,7 @@ def _display_analysis_results(console: Console, result: IncidentState) -> None:
     Args:
         console: Rich console instance
         result: Analysis result dictionary
+
     """
     # Display RCA Results
     rca_result = result.get("rca_result")
@@ -363,7 +382,7 @@ def _run_shadow_verification(
     changes = _build_shadow_changes(fix_proposal)
     if not changes:
         console.print(
-            "[yellow]No actionable changes found for shadow verification. Skipping.[/yellow]"
+            "[yellow]No actionable changes found for shadow verification. Skipping.[/yellow]",
         )
         return None, None, None
 
@@ -449,7 +468,7 @@ def _run_analysis_workflow(
                 resource_name=resource_name,
                 namespace=namespace,
                 use_mock=use_mock,
-            )
+            ),
         )
 
 
@@ -462,7 +481,7 @@ def _show_low_confidence_warning(console: Console, error_msg: str) -> None:
             "Results shown above are partial and may require manual verification.",
             title="[bold yellow]⚠️ Low Confidence Warning[/bold yellow]",
             border_style="yellow",
-        )
+        ),
     )
     console.print()
 
@@ -483,6 +502,7 @@ def _maybe_run_shadow_verification(
     run_verification = verify if verify is not None else settings.agent.dry_run_by_default
     if (
         run_verification
+        and settings.shadow.enabled
         and not mock
         and verification_plan
         and fix_proposal
@@ -508,7 +528,7 @@ def _maybe_run_shadow_verification(
                     "No actionable changes were available for shadow verification.",
                     title="[bold magenta]Shadow Verification[/bold magenta]",
                     border_style="yellow",
-                )
+                ),
             )
             console.print()
         else:
@@ -523,7 +543,7 @@ def _maybe_run_shadow_verification(
                     details,
                     title="[bold magenta]Shadow Verification[/bold magenta]",
                     border_style="magenta",
-                )
+                ),
             )
             console.print()
     elif run_verification and mock:
@@ -546,6 +566,342 @@ def _update_incident_metrics(
     active_incidents.labels(severity=severity, namespace=namespace).inc()
 
 
+def _generate_abort_report(
+    *,
+    resource_type: str,
+    resource_name: str,
+    namespace: str,
+    rca_result: RCAResult | None,
+    fix_proposal: FixProposal | None,
+    shadow_id: str | None,
+    shadow_passed: bool | None,
+    shadow_logs: str | None,
+) -> dict[str, Any]:
+    """Generate a comprehensive abort report when user declines fix application.
+
+    Args:
+        resource_type: Kind of the Kubernetes resource
+        resource_name: Name of the resource
+        namespace: Namespace of the resource
+        rca_result: Root cause analysis result
+        fix_proposal: Proposed fix
+        shadow_id: Shadow environment ID
+        shadow_passed: Whether shadow verification passed
+        shadow_logs: Shadow environment logs
+
+    Returns:
+        Report dictionary with complete analysis details
+
+    """
+    report: dict[str, Any] = {
+        "timestamp": datetime.now(UTC).isoformat(),
+        "decision": "aborted",
+        "reason": "User declined to apply fix to production cluster",
+        "resource": {
+            "kind": resource_type,
+            "name": resource_name,
+            "namespace": namespace,
+        },
+    }
+
+    if rca_result:
+        report["analysis"] = {
+            "root_cause": rca_result.root_cause,
+            "severity": rca_result.severity.value,
+            "confidence": rca_result.confidence_score,
+            "reasoning": rca_result.reasoning,
+            "affected_components": rca_result.affected_components,
+            "analysis_steps": rca_result.analysis_steps,
+            "evidence_summary": rca_result.evidence_summary,
+        }
+
+    if fix_proposal:
+        report["proposed_fix"] = {
+            "fix_type": fix_proposal.fix_type.value,
+            "description": fix_proposal.description,
+            "commands": fix_proposal.commands,
+            "risks": fix_proposal.risks,
+            "rollback_commands": fix_proposal.rollback_commands,
+            "estimated_downtime": fix_proposal.estimated_downtime,
+        }
+
+    report["shadow_verification"] = {
+        "shadow_id": shadow_id,
+        "passed": shadow_passed,
+        "logs_excerpt": shadow_logs[-2000:] if shadow_logs else None,
+    }
+
+    report["recommendation"] = (
+        "Review the proposed fix and rerun with --auto-fix when ready to apply. "
+        "Alternatively, apply the fix manually using the commands provided above."
+    )
+
+    return report
+
+
+def _display_abort_report(console: Console, report: dict[str, Any]) -> None:
+    """Display the abort report in a formatted panel."""
+    report_text = "[bold]Decision:[/bold] ABORTED\n"
+    report_text += f"[bold]Timestamp:[/bold] {report['timestamp']}\n"
+    report_text += f"[bold]Reason:[/bold] {report['reason']}\n\n"
+
+    resource = report.get("resource", {})
+    report_text += f"[bold]Resource:[/bold] {resource.get('kind')}/{resource.get('name')}\n"
+    report_text += f"[bold]Namespace:[/bold] {resource.get('namespace')}\n\n"
+
+    analysis = report.get("analysis", {})
+    if analysis:
+        report_text += "[bold]Root Cause Analysis:[/bold]\n"
+        report_text += f"  • Root Cause: {analysis.get('root_cause', 'N/A')}\n"
+        report_text += f"  • Severity: {analysis.get('severity', 'N/A')}\n"
+        report_text += f"  • Confidence: {analysis.get('confidence', 0):.0%}\n\n"
+
+    fix = report.get("proposed_fix", {})
+    if fix:
+        report_text += "[bold]Proposed Fix (NOT applied):[/bold]\n"
+        report_text += f"  • Type: {fix.get('fix_type', 'N/A')}\n"
+        report_text += f"  • Description: {fix.get('description', 'N/A')}\n"
+        if fix.get("commands"):
+            report_text += "  • Commands:\n"
+            for cmd in fix["commands"][:3]:
+                report_text += f"      [dim]{cmd}[/dim]\n"
+
+    shadow = report.get("shadow_verification", {})
+    if shadow.get("shadow_id"):
+        report_text += "\n[bold]Shadow Verification:[/bold]\n"
+        report_text += f"  • ID: {shadow.get('shadow_id')}\n"
+        passed = shadow.get("passed")
+        status = "[green]PASSED[/green]" if passed else "[red]FAILED[/red]"
+        report_text += f"  • Result: {status}\n"
+
+    report_text += f"\n[bold]Recommendation:[/bold]\n{report.get('recommendation', '')}"
+
+    console.print(
+        Panel(
+            report_text,
+            title="[bold yellow]Abort Report[/bold yellow]",
+            border_style="yellow",
+        ),
+    )
+    console.print()
+
+
+def _convert_fix_proposal_to_crd(
+    agent_fix: AgentFixProposal,
+) -> CRDFixProposal:
+    """Convert agent FixProposal to CRD FixProposal for fix_applier.
+
+    Args:
+        agent_fix: FixProposal from aegis.agent.state
+
+    Returns:
+        CRDFixProposal: FixProposal for aegis.crd/fix_applier
+
+    """
+    # Convert FixType enum by value (both are str enums with same values)
+    crd_fix_type = CRDFixType(agent_fix.fix_type.value)
+
+    return CRDFixProposal(
+        fix_type=crd_fix_type,
+        description=agent_fix.description,
+        commands=agent_fix.commands,
+        manifests=agent_fix.manifests,
+        patch=None,  # Agent FixProposal doesn't have patch field
+        confidence_score=agent_fix.confidence_score,
+        risks=agent_fix.risks,
+        estimated_downtime=agent_fix.estimated_downtime,
+    )
+
+
+async def _apply_fix_to_production(
+    *,
+    console: Console,
+    fix_proposal: FixProposal,
+    resource_type: str,
+    resource_name: str,
+    namespace: str,
+) -> FixResult:
+    """Apply the verified fix to the production cluster.
+
+    Args:
+        console: Rich console for output
+        fix_proposal: The fix proposal to apply
+        resource_type: Kind of the target resource
+        resource_name: Name of the target resource
+        namespace: Namespace of the target resource
+
+    Returns:
+        FixResult with application status
+
+    """
+    fix_applier = get_fix_applier()
+
+    console.print("\n[bold cyan]Applying fix to production cluster...[/bold cyan]\n")
+
+    # Convert from agent FixProposal to CRD FixProposal
+    crd_fix_proposal = _convert_fix_proposal_to_crd(fix_proposal)
+
+    return await fix_applier.apply_fix(
+        fix_proposal=crd_fix_proposal,
+        resource_kind=resource_type.capitalize(),
+        resource_name=resource_name,
+        namespace=namespace,
+    )
+
+
+def _display_fix_result(console: Console, result: FixResult) -> None:
+    """Display the fix application result."""
+    if result.success:
+        details = "[bold green]✓ Fix Applied Successfully[/bold green]\n\n"
+        details += (
+            f"[bold]Dry-run Validation:[/bold] {'Passed' if result.dry_run_passed else 'Skipped'}\n"
+        )
+        details += f"[bold]Applied:[/bold] {'Yes' if result.applied else 'No'}\n"
+        if result.applied_at:
+            details += f"[bold]Applied At:[/bold] {result.applied_at.isoformat()}\n"
+        if result.resource_version:
+            details += f"[bold]Resource Version:[/bold] {result.resource_version}\n"
+        if result.rollback_info:
+            details += "\n[bold]Rollback Information:[/bold]\n"
+            for key, value in result.rollback_info.items():
+                details += f"  • {key}: {value}\n"
+
+        console.print(
+            Panel(
+                details,
+                title="[bold green]Fix Applied[/bold green]",
+                border_style="green",
+            ),
+        )
+    else:
+        details = "[bold red]✗ Fix Application Failed[/bold red]\n\n"
+        details += f"[bold]Error:[/bold] {result.error_message or 'Unknown error'}\n"
+        details += f"[bold]Dry-run Passed:[/bold] {result.dry_run_passed}\n"
+
+        console.print(
+            Panel(
+                details,
+                title="[bold red]Fix Failed[/bold red]",
+                border_style="red",
+            ),
+        )
+    console.print()
+
+
+def _prompt_apply_fix_to_cluster(
+    *,
+    console: Console,
+    result: IncidentState,
+    resource_type: str,
+    resource_name: str,
+    namespace: str,
+    auto_fix: bool,
+) -> None:
+    """Prompt user to apply fix to production cluster after successful shadow verification.
+
+    Args:
+        console: Rich console for output
+        result: The analysis result with shadow verification status
+        resource_type: Kind of the Kubernetes resource
+        resource_name: Name of the resource
+        namespace: Namespace of the resource
+        auto_fix: If True, skip prompt and apply automatically
+
+    """
+    shadow_passed = result.get("shadow_test_passed")
+    fix_proposal = result.get("fix_proposal")
+    rca_result = result.get("rca_result")
+
+    # Only proceed if shadow verification passed and we have a fix
+    if not shadow_passed or not fix_proposal:
+        return
+
+    console.print()
+    console.print("[bold cyan]━" * 50 + "[/bold cyan]")
+    console.print("[bold cyan]Shadow verification PASSED![/bold cyan]")
+    console.print(
+        "The proposed fix has been verified in an isolated vCluster environment.\n",
+    )
+
+    # Show fix summary before prompting
+    console.print("[bold]Proposed Fix Summary:[/bold]")
+    console.print(f"  • Type: [cyan]{fix_proposal.fix_type.value}[/cyan]")
+    console.print(f"  • Description: {fix_proposal.description}")
+    if fix_proposal.commands:
+        console.print("  • Commands to execute:")
+        for cmd in fix_proposal.commands[:3]:
+            console.print(f"      [dim]{cmd}[/dim]")
+    if fix_proposal.risks:
+        console.print("  • [yellow]Risks:[/yellow]")
+        for risk in fix_proposal.risks:
+            console.print(f"      ⚠️  {risk}")
+    console.print()
+
+    # Auto-fix mode or prompt user
+    if auto_fix:
+        apply_fix = True
+        console.print("[yellow]Auto-fix mode enabled. Applying fix automatically...[/yellow]\n")
+    else:
+        # Interactive confirmation prompt
+        apply_fix = typer.confirm(
+            "Apply this fix to the PRODUCTION cluster?",
+            default=False,
+        )
+
+    if apply_fix:
+        # Apply the fix to production
+        try:
+            fix_result = asyncio.run(
+                _apply_fix_to_production(
+                    console=console,
+                    fix_proposal=fix_proposal,
+                    resource_type=resource_type,
+                    resource_name=resource_name,
+                    namespace=namespace,
+                ),
+            )
+            _display_fix_result(console, fix_result)
+
+            if fix_result.success:
+                log.info(
+                    "fix_applied_to_production",
+                    resource=f"{resource_type}/{resource_name}",
+                    namespace=namespace,
+                    fix_type=fix_proposal.fix_type.value,
+                )
+            else:
+                log.error(
+                    "fix_application_failed",
+                    resource=f"{resource_type}/{resource_name}",
+                    error=fix_result.error_message,
+                )
+        except Exception as e:
+            console.print(f"\n[bold red]Error applying fix:[/bold red] {e}\n")
+            log.exception("fix_application_error")
+    else:
+        # User declined - generate and display abort report
+        console.print("\n[yellow]Fix application cancelled by user.[/yellow]\n")
+
+        report = _generate_abort_report(
+            resource_type=resource_type,
+            resource_name=resource_name,
+            namespace=namespace,
+            rca_result=rca_result,
+            fix_proposal=fix_proposal,
+            shadow_id=result.get("shadow_env_id"),
+            shadow_passed=shadow_passed,
+            shadow_logs=result.get("shadow_logs"),
+        )
+
+        _display_abort_report(console, report)
+
+        log.info(
+            "fix_application_aborted",
+            resource=f"{resource_type}/{resource_name}",
+            namespace=namespace,
+        )
+
+
 @typed_command(app)
 def analyze(
     resource: str = typer.Argument(
@@ -559,7 +915,7 @@ def analyze(
         help="Kubernetes namespace",
     ),
     _auto_fix: bool = typer.Option(
-        False,
+        settings.incident.auto_fix_enabled,
         "--auto-fix",
         help="Automatically apply fixes after verification",
     ),
@@ -588,9 +944,10 @@ def analyze(
         aegis analyze pod/nginx --auto-fix --export report.md
         aegis analyze deployment/demo-api -n production --verify
         aegis analyze pod/demo --mock  # Development mode without cluster
+
     """
     console.print(
-        f"\n[bold cyan]Analyzing:[/bold cyan] {resource} in namespace [yellow]{namespace}[/yellow]\n"
+        f"\n[bold cyan]Analyzing:[/bold cyan] {resource} in namespace [yellow]{namespace}[/yellow]\n",
     )
 
     # Check Ollama availability
@@ -613,7 +970,7 @@ def analyze(
         if result.get("no_problems"):
             console.print(
                 f"\n[bold green]✓ No problems detected[/bold green] for "
-                f"[cyan]{resource}[/cyan] in namespace [yellow]{namespace}[/yellow]\n"
+                f"[cyan]{resource}[/cyan] in namespace [yellow]{namespace}[/yellow]\n",
             )
             console.print("The resource appears to be healthy according to K8sGPT analysis.\n")
             return  # Exit successfully
@@ -642,6 +999,16 @@ def analyze(
             resource_type=resource_type,
             resource_name=resource_name,
             namespace=namespace,
+        )
+
+        # Prompt user to apply fix to production if shadow verification passed
+        _prompt_apply_fix_to_cluster(
+            console=console,
+            result=result,
+            resource_type=resource_type,
+            resource_name=resource_name,
+            namespace=namespace,
+            auto_fix=_auto_fix,
         )
 
         # Update metrics
@@ -695,6 +1062,7 @@ def incident_list(
         aegis incident list
         aegis incident list --namespace prod --severity high
         aegis incident list --all-namespaces
+
     """
     from aegis.crd import (
         AEGIS_API_GROUP,
@@ -734,7 +1102,7 @@ def incident_list(
         incidents: list[AegisIncident] = []
         for item in items:
             try:
-                incident = AegisIncident.from_kubernetes_object(cast(dict[str, Any], item))
+                incident = AegisIncident.from_kubernetes_object(cast("dict[str, Any]", item))
                 # Apply severity filter if specified
                 if severity and incident.spec.severity.value.lower() != severity.lower():
                     continue
@@ -791,7 +1159,7 @@ def incident_list(
         if e.status == HTTP_NOT_FOUND:
             console.print(
                 "[bold yellow]Warning:[/bold yellow] AegisIncident CRD not installed. "
-                "Install with: kubectl apply -f deploy/helm/aegis/crds/"
+                "Install with: kubectl apply -f deploy/helm/aegis/crds/",
             )
         else:
             console.print(f"[bold red]Error:[/bold red] {e.reason}")
@@ -940,6 +1308,7 @@ def incident_show(
     Example:
         aegis incident show inc-2026-001
         aegis incident show inc-2026-001 -n production
+
     """
     from aegis.crd import (
         AEGIS_API_GROUP,
@@ -963,7 +1332,7 @@ def incident_show(
             plural=AEGIS_INCIDENT_PLURAL,
             name=incident_id,
         )
-        incident = AegisIncident.from_kubernetes_object(cast(dict[str, Any], obj))
+        incident = AegisIncident.from_kubernetes_object(cast("dict[str, Any]", obj))
         details = _build_incident_details(incident, namespace)
 
         panel = Panel(
@@ -976,7 +1345,7 @@ def incident_show(
     except client.ApiException as e:
         if e.status == HTTP_NOT_FOUND:
             console.print(
-                f"[bold red]Error:[/bold red] Incident '{incident_id}' not found in namespace '{namespace}'"
+                f"[bold red]Error:[/bold red] Incident '{incident_id}' not found in namespace '{namespace}'",
             )
         else:
             console.print(f"[bold red]Error:[/bold red] {e.reason}")
@@ -994,7 +1363,7 @@ def _validate_incident_for_approval(incident: Any, phase_enum: Any) -> int | Non
     if incident.status.phase != phase_enum.AWAITING_APPROVAL:
         console.print(
             f"[bold yellow]Warning:[/bold yellow] Incident is in phase "
-            f"'{incident.status.phase.value}', not 'AwaitingApproval'"
+            f"'{incident.status.phase.value}', not 'AwaitingApproval'",
         )
         if incident.status.phase in [phase_enum.RESOLVED, phase_enum.REJECTED]:
             console.print("[dim]This incident has already been resolved/rejected.[/dim]")
@@ -1016,7 +1385,7 @@ def _validate_incident_for_rejection(incident: Any, phase_enum: Any) -> int | No
     ]:
         console.print(
             f"[bold yellow]Warning:[/bold yellow] Incident is in phase "
-            f"'{incident.status.phase.value}'"
+            f"'{incident.status.phase.value}'",
         )
         if incident.status.phase in [phase_enum.RESOLVED, phase_enum.REJECTED]:
             console.print("[dim]This incident has already been resolved/rejected.[/dim]")
@@ -1056,6 +1425,7 @@ def incident_approve(
         aegis incident approve inc-2026-001
         aegis incident approve inc-2026-001 -n production
         aegis incident approve inc-2026-001 --user sre-lead --comment "Verified fix"
+
     """
     from aegis.crd import (
         AEGIS_API_GROUP,
@@ -1085,7 +1455,7 @@ def incident_approve(
             plural=AEGIS_INCIDENT_PLURAL,
             name=incident_id,
         )
-        incident = AegisIncident.from_kubernetes_object(cast(dict[str, Any], obj))
+        incident = AegisIncident.from_kubernetes_object(cast("dict[str, Any]", obj))
     except client.ApiException as e:
         if e.status == HTTP_NOT_FOUND:
             console.print(f"[bold red]Error:[/bold red] Incident '{incident_id}' not found")
@@ -1139,7 +1509,7 @@ def incident_approve(
             )
 
         console.print(
-            f"\n[green]✓[/green] Incident [cyan]{incident_id}[/cyan] approved by [yellow]{approving_user}[/yellow]"
+            f"\n[green]✓[/green] Incident [cyan]{incident_id}[/cyan] approved by [yellow]{approving_user}[/yellow]",
         )
         console.print("  The operator will now apply the fix with dry-run validation.")
         console.print("  Use [cyan]aegis incident show[/cyan] to monitor progress.")
@@ -1190,6 +1560,7 @@ def incident_reject(
     Examples:
         aegis incident reject inc-2026-001 --reason "Fix too risky for production"
         aegis incident reject inc-2026-001 -n prod -r "Need to investigate further"
+
     """
     from aegis.crd import (
         AEGIS_API_GROUP,
@@ -1224,7 +1595,7 @@ def incident_reject(
             plural=AEGIS_INCIDENT_PLURAL,
             name=incident_id,
         )
-        incident = AegisIncident.from_kubernetes_object(cast(dict[str, Any], obj))
+        incident = AegisIncident.from_kubernetes_object(cast("dict[str, Any]", obj))
     except client.ApiException as e:
         if e.status == HTTP_NOT_FOUND:
             console.print(f"[bold red]Error:[/bold red] Incident '{incident_id}' not found")
@@ -1256,7 +1627,7 @@ def incident_reject(
                     "rejectedBy": rejecting_user,
                     "rejectedAt": now,
                     "rejectionReason": reason,
-                }
+                },
             },
             "status": {
                 "phase": IncidentPhase.REJECTED.value,
@@ -1275,7 +1646,7 @@ def incident_reject(
             )
 
         console.print(
-            f"\n[yellow]✗[/yellow] Incident [cyan]{incident_id}[/cyan] rejected by [yellow]{rejecting_user}[/yellow]"
+            f"\n[yellow]✗[/yellow] Incident [cyan]{incident_id}[/cyan] rejected by [yellow]{rejecting_user}[/yellow]",
         )
         console.print(f"  Reason: {reason}")
 
@@ -1307,6 +1678,7 @@ app.add_typer(shadow_app, name="shadow")
 _SECONDS_PER_MINUTE = 60
 _MINUTES_PER_HOUR = 60
 _HOURS_PER_DAY = 24
+_RESOURCE_REF_PARTS = 2
 
 
 def _format_time_ago(dt: "datetime") -> str:
@@ -1328,11 +1700,73 @@ def _format_time_ago(dt: "datetime") -> str:
     return f"{days}d ago"
 
 
+def _parse_resource_ref(value: str) -> tuple[str, str]:
+    """Parse kind/name resource reference."""
+    if "/" not in value:
+        if not value.strip():
+            console.print(
+                "[bold red]Error:[/bold red] Resource name cannot be empty",
+            )
+            raise typer.Exit(code=1)
+        return "deployment", value
+
+    parts = value.split("/")
+    if len(parts) != _RESOURCE_REF_PARTS or not parts[0] or not parts[1]:
+        console.print(
+            "[bold red]Error:[/bold red] Resource must be in format: kind/name "
+            "(e.g., deployment/nginx, pod/worker)",
+        )
+        raise typer.Exit(code=1)
+    return parts[0], parts[1]
+
+
+def _shadow_log_path(shadow_id: str) -> Path:
+    """Resolve log path for background shadow operations."""
+    try:
+        base = Path.home() / ".aegis" / "shadow"
+    except RuntimeError:
+        base = Path(tempfile.gettempdir()) / "aegis-shadow"
+    base.mkdir(parents=True, exist_ok=True)
+    return base / f"{shadow_id}.log"
+
+
+def _spawn_shadow_create(
+    source_resource: str,
+    namespace: str,
+    shadow_id: str,
+) -> Path:
+    """Spawn a background process to create the shadow environment."""
+    log_path = _shadow_log_path(shadow_id)
+    cmd = [
+        sys.executable,
+        "-m",
+        "aegis.cli",
+        "shadow",
+        "create",
+        source_resource,
+        "--namespace",
+        namespace,
+        "--id",
+        shadow_id,
+        "--wait",
+    ]
+    with log_path.open("wb") as handle:
+        asyncio.run(
+            asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=handle,
+                stderr=handle,
+                start_new_session=True,
+            )
+        )
+    return log_path
+
+
 @typed_command(shadow_app, name="create")
 def shadow_create(
     source_resource: str = typer.Argument(
         ...,
-        help="Source resource to clone (format: kind/name, e.g., deployment/nginx)",
+        help="Source resource to clone (kind/name, defaults to deployment/<name>)",
     ),
     namespace: str = typer.Option(
         "default",
@@ -1361,18 +1795,26 @@ def shadow_create(
         aegis shadow create deployment/nginx
         aegis shadow create deployment/api -n production --wait
         aegis shadow create pod/worker --id my-test-env
+
     """
-    # Parse resource format
-    parts = source_resource.split("/")
-    expected_parts = 2
-    if len(parts) != expected_parts:
-        console.print(
-            "[bold red]Error:[/bold red] Resource must be in format: kind/name "
-            "(e.g., deployment/nginx, pod/worker)"
-        )
+    resource_kind, resource_name = _parse_resource_ref(source_resource)
+
+    if not settings.shadow.enabled:
+        console.print("[bold red]Error:[/bold red] Shadow verification is disabled")
         raise typer.Exit(code=1)
 
-    resource_kind, resource_name = parts[0], parts[1]
+    if not shadow_id:
+        timestamp = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
+        shadow_id = f"{resource_name}-{timestamp}"
+
+    from aegis.shadow.manager import ShadowManager
+
+    sanitized_id = ShadowManager._sanitize_name(shadow_id)
+    if sanitized_id != shadow_id:
+        console.print(
+            f"[yellow]Note:[/yellow] Shadow ID sanitized to [cyan]{sanitized_id}[/cyan]",
+        )
+        shadow_id = sanitized_id
     log.info(
         "creating_shadow",
         resource_kind=resource_kind,
@@ -1400,7 +1842,7 @@ def shadow_create(
             try:
                 env = asyncio.run(_create())
                 console.print(
-                    f"\n[green]✓[/green] Shadow environment [cyan]{env.id}[/cyan] created"
+                    f"\n[green]✓[/green] Shadow environment [cyan]{env.id}[/cyan] created",
                 )
                 console.print(f"  Namespace: [yellow]{env.namespace}[/yellow]")
                 console.print(f"  Status: [green]{env.status.value}[/green]")
@@ -1411,13 +1853,18 @@ def shadow_create(
                 log.exception("shadow_create_failed")
                 raise typer.Exit(code=1) from None
     else:
-        # Async mode: start creation and return immediately
-        console.print(f"[bold cyan]Starting shadow environment creation for {source_resource}...")
+        # Async mode: spawn background creator and return immediately
+        console.print(
+            f"[bold cyan]Starting shadow environment creation for {source_resource}...[/bold cyan]"
+        )
         try:
-            env = asyncio.run(_create())
-            console.print(f"[green]✓[/green] Shadow environment [cyan]{env.id}[/cyan] created")
-            console.print(f"  Status: [yellow]{env.status.value}[/yellow]")
-            console.print("\nUse [cyan]aegis shadow list[/cyan] to check status")
+            log_path = _spawn_shadow_create(source_resource, namespace, shadow_id)
+            console.print(
+                f"[green]✓[/green] Shadow creation started for [cyan]{shadow_id}[/cyan]",
+            )
+            console.print(f"  Logs: [dim]{log_path}[/dim]")
+            console.print(f"\nTrack progress: [cyan]aegis shadow status {shadow_id}[/cyan]")
+            console.print(f"Wait for readiness: [cyan]aegis shadow wait {shadow_id}[/cyan]")
         except RuntimeError as e:
             console.print(f"\n[bold red]Error:[/bold red] {e}")
             log.exception("shadow_create_failed")
@@ -1435,6 +1882,7 @@ def shadow_list() -> None:
 
     Example:
         aegis shadow list
+
     """
     log.info("listing_shadows")
 
@@ -1487,6 +1935,82 @@ def shadow_list() -> None:
     console.print(f"\n[dim]Total: {len(environments)} environment(s)[/dim]\n")
 
 
+@typed_command(shadow_app, name="status")
+def shadow_status(
+    shadow_id: str = typer.Argument(..., help="Shadow environment ID"),
+) -> None:
+    """Show status for a shadow environment."""
+    log.info("shadow_status", shadow_id=shadow_id)
+
+    shadow_manager = get_shadow_manager()
+    env = shadow_manager.get_environment(shadow_id)
+
+    if not env:
+        console.print(f"[bold red]Error:[/bold red] Shadow environment '{shadow_id}' not found")
+        raise typer.Exit(code=1)
+
+    console.print("\n[bold cyan]Shadow Status[/bold cyan]\n")
+    console.print(f"ID: [cyan]{env.id}[/cyan]")
+    console.print(f"Status: [green]{env.status.value}[/green]")
+    console.print(f"Source: [white]{env.source_resource_kind}/{env.source_resource}[/white]")
+    console.print(f"Namespace: [yellow]{env.namespace}[/yellow]")
+    if env.host_namespace:
+        console.print(f"Host Namespace: [yellow]{env.host_namespace}[/yellow]")
+    if env.runtime:
+        console.print(f"Runtime: [blue]{env.runtime}[/blue]")
+    console.print(f"Created: [dim]{_format_time_ago(env.created_at)}[/dim]")
+    if env.health_score > 0:
+        console.print(f"Health Score: [cyan]{env.health_score:.0%}[/cyan]")
+    console.print()
+
+
+@typed_command(shadow_app, name="wait")
+def shadow_wait(
+    shadow_id: str = typer.Argument(..., help="Shadow environment ID"),
+    timeout: int = typer.Option(
+        settings.shadow.verification_timeout,
+        "--timeout",
+        "-t",
+        help="Timeout in seconds to wait for readiness",
+    ),
+    poll_interval: float = typer.Option(
+        3.0,
+        "--poll",
+        "-p",
+        help="Polling interval in seconds",
+    ),
+) -> None:
+    """Wait for a shadow environment to become ready."""
+    log.info("shadow_wait", shadow_id=shadow_id, timeout=timeout)
+
+    shadow_manager = get_shadow_manager()
+
+    async def _wait() -> "ShadowEnvironment":
+        from aegis.shadow.manager import ShadowEnvironment
+
+        env: ShadowEnvironment = await shadow_manager.wait_for_ready(
+            shadow_id=shadow_id,
+            timeout_seconds=timeout,
+            poll_interval=poll_interval,
+        )
+        return env
+
+    with console.status(f"[bold blue]Waiting for {shadow_id} to be ready..."):
+        try:
+            env = asyncio.run(_wait())
+        except Exception as e:
+            console.print(f"\n[bold red]Error:[/bold red] {e}")
+            log.exception("shadow_wait_failed")
+            raise typer.Exit(code=1) from None
+
+    console.print(f"\n[green]✓[/green] Shadow environment [cyan]{env.id}[/cyan] is ready")
+    console.print(f"  Namespace: [yellow]{env.namespace}[/yellow]")
+    console.print(f"  Status: [green]{env.status.value}[/green]")
+    if env.kubeconfig_path:
+        console.print(f"  Kubeconfig: [blue]{env.kubeconfig_path}[/blue]")
+    console.print()
+
+
 @typed_command(shadow_app, name="delete")
 def shadow_delete(
     shadow_id: str = typer.Argument(..., help="Shadow environment ID"),
@@ -1505,6 +2029,7 @@ def shadow_delete(
     Examples:
         aegis shadow delete my-test-env
         aegis shadow delete my-test-env --force
+
     """
     log.info("deleting_shadow", shadow_id=shadow_id)
 
@@ -1541,12 +2066,28 @@ def shadow_delete(
 
 @typed_command(shadow_app, name="verify")
 def shadow_verify(
-    shadow_id: str = typer.Argument(..., help="Shadow environment ID"),
+    shadow_id: str | None = typer.Argument(None, help="Shadow environment ID"),
     duration: int = typer.Option(
         30,
         "--duration",
         "-d",
         help="Verification duration in seconds",
+    ),
+    ephemeral: bool = typer.Option(
+        False,
+        "--ephemeral",
+        help="Create a temporary shadow environment for verification",
+    ),
+    app: str | None = typer.Option(
+        None,
+        "--app",
+        help="Source resource to clone (kind/name, defaults to deployment/<name>)",
+    ),
+    namespace: str = typer.Option(
+        "default",
+        "--namespace",
+        "-n",
+        help="Source resource namespace for ephemeral verification",
     ),
 ) -> None:
     """Run verification tests on a shadow environment.
@@ -1557,31 +2098,53 @@ def shadow_verify(
     Examples:
         aegis shadow verify my-test-env
         aegis shadow verify my-test-env --duration 60
+
     """
-    log.info("verifying_shadow", shadow_id=shadow_id, duration=duration)
+    if ephemeral:
+        if not app:
+            console.print(
+                "[bold red]Error:[/bold red] --app is required when using --ephemeral",
+            )
+            raise typer.Exit(code=1)
+        resource_kind, resource_name = _parse_resource_ref(app)
+        log.info(
+            "verifying_shadow_ephemeral",
+            resource_kind=resource_kind,
+            resource_name=resource_name,
+            namespace=namespace,
+            duration=duration,
+        )
+    else:
+        if not shadow_id:
+            console.print("[bold red]Error:[/bold red] Shadow environment ID required")
+            raise typer.Exit(code=1)
+        log.info("verifying_shadow", shadow_id=shadow_id, duration=duration)
 
     shadow_manager = get_shadow_manager()
-    env = shadow_manager.get_environment(shadow_id)
-
-    if not env:
-        console.print(f"[bold red]Error:[/bold red] Shadow environment '{shadow_id}' not found")
-        raise typer.Exit(code=1)
-
-    if env.status.value != "ready":
-        console.print(
-            f"[bold red]Error:[/bold red] Shadow environment is not ready "
-            f"(current status: {env.status.value})"
-        )
-        raise typer.Exit(code=1)
 
     async def _verify() -> bool:
+        if ephemeral:
+            env = await shadow_manager.create_shadow(
+                source_namespace=namespace,
+                source_resource=resource_name,
+                source_resource_kind=resource_kind.capitalize(),
+            )
+            try:
+                return await shadow_manager.run_verification(
+                    shadow_id=env.id,
+                    changes={},  # No changes for manual verify
+                    duration=duration,
+                )
+            finally:
+                await shadow_manager.cleanup(env.id)
         return await shadow_manager.run_verification(
-            shadow_id=shadow_id,
+            shadow_id=shadow_id or "",
             changes={},  # No changes for manual verify
             duration=duration,
         )
 
-    with console.status(f"[bold blue]Running verification on {shadow_id} for {duration}s..."):
+    target_label = shadow_id or (f"{resource_kind}/{resource_name}" if ephemeral else "")
+    with console.status(f"[bold blue]Running verification on {target_label} for {duration}s..."):
         try:
             passed = asyncio.run(_verify())
         except Exception as e:
@@ -1590,7 +2153,7 @@ def shadow_verify(
             raise typer.Exit(code=1) from None
 
     # Refresh env to get updated status
-    env = shadow_manager.get_environment(shadow_id)
+    env = shadow_manager.get_environment(shadow_id) if shadow_id else None
 
     if passed:
         console.print("\n[bold green]✓ Verification PASSED[/bold green]")
@@ -1636,6 +2199,7 @@ def config(
     Example:
         aegis config
         aegis config --show-sensitive
+
     """
     log.info("showing_config", show_sensitive=show_sensitive)
 
@@ -1714,8 +2278,8 @@ def operator_run(
         aegis operator run
         aegis operator run --namespace default
         aegis operator run -v
-    """
 
+    """
     from aegis.k8s_operator import handlers  # noqa: F401
 
     log.info("operator_starting", namespace=namespace or "all", verbose=verbose)
@@ -1754,8 +2318,8 @@ def operator_status() -> None:
 
     Example:
         aegis operator status
-    """
 
+    """
     log.info("checking_operator_status")
     console.print("\n[bold cyan]AEGIS Operator Status[/bold cyan]\n")
 

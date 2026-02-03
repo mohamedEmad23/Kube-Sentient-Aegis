@@ -43,9 +43,6 @@ def _ensure_verifier_verbosity(
             "for the proposed change."
         )
 
-    if verification_plan.security_checks:
-        updates["security_checks"] = []
-
     return verification_plan.model_copy(update=updates) if updates else verification_plan
 
 

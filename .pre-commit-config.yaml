@@ -63,6 +63,7 @@ repos:
     hooks:
       - id: mypy
         additional_dependencies:
+          - kopf>=1.37.2
           - pydantic>=2.10.0
           - pydantic-settings>=2.0.0
           - types-requests
@@ -126,7 +127,7 @@ repos:
     hooks:
       - id: helm-lint
         name: Helm Lint
-        entry: bash -c 'command -v helm >/dev/null 2>&1 && helm lint deploy/helm/aegis-operator/ || echo "Helm not installed, skipping..."'
+        entry: bash -c 'command -v helm >/dev/null 2>&1 && helm lint deploy/helm/aegis/ || echo "Helm not installed, skipping..."'
         language: system
         files: ^deploy/helm/
         pass_filenames: false

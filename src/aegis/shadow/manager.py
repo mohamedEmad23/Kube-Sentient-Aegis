@@ -15,6 +15,7 @@ Features:
 import asyncio
 import base64
 import copy
+import os
 import re
 import shlex
 import shutil
@@ -28,6 +29,7 @@ from pathlib import Path
 from typing import Any, cast
 from urllib.parse import urlparse
 
+import yaml
 from kubernetes import client, config
 from kubernetes.client.rest import ApiException
 
@@ -43,6 +45,7 @@ from aegis.observability._metrics import (
     shadow_verification_duration_seconds,
     shadow_verifications_total,
 )
+from aegis.security.pipeline import SecurityPipeline
 from aegis.shadow.vcluster import VClusterManager
 
 
@@ -58,6 +61,7 @@ HEALTH_THRESHOLD = SHADOW_HEALTH_PASS_THRESHOLD  # Alias for backwards compatibi
 K8S_NAME_MAX_LENGTH = 63
 DEFAULT_HTTP_PORT = 80
 VCLUSTER_KUBECONFIG_NAME = "vc-shadow-kubeconfig"
+VCLUSTER_KUBECONFIG_SECRET_MAX_ATTEMPTS = 3
 SMOKE_TEST_IMAGE = "curlimages/curl:8.5.0"
 LOAD_TEST_IMAGE = "locustio/locust:2.42.6"
 DEFAULT_SMOKE_PATHS = ["/health", "/ready", "/healthz", "/readyz"]
@@ -70,6 +74,19 @@ KUBECTL_SKIP_ARGS = {"-n", "--namespace", "--context", "--kubeconfig"}
 KUBECTL_MIN_ARGS = 2
 KUBECTL_SET_MIN_ARGS = 3
 KUBECTL_SET_IMAGE_MIN_ARGS = 4
+
+# Namespace labels/annotations for shadow discovery
+SHADOW_LABEL_KEY = "aegis.io/shadow"
+SHADOW_MANAGED_BY_LABEL = "aegis.io/managed-by"
+SHADOW_ID_ANNOTATION = "aegis.io/shadow-id"
+SHADOW_SOURCE_NAMESPACE_ANNOTATION = "aegis.io/source-namespace"
+SHADOW_SOURCE_NAME_ANNOTATION = "aegis.io/source-name"
+SHADOW_SOURCE_KIND_ANNOTATION = "aegis.io/source-kind"
+SHADOW_RUNTIME_ANNOTATION = "aegis.io/shadow-runtime"
+SHADOW_STATUS_ANNOTATION = "aegis.io/shadow-status"
+SHADOW_STATUS_UPDATED_AT = "aegis.io/shadow-status-updated-at"
+SHADOW_TARGET_NAMESPACE_ANNOTATION = "aegis.io/shadow-target-namespace"
+SHADOW_CREATED_AT_ANNOTATION = "aegis.io/shadow-created-at"
 
 
 class ShadowStatus(str, Enum):
@@ -191,10 +208,13 @@ class ShadowManager:
         Raises:
             RuntimeError: If max concurrent shadows exceeded or creation fails
         """
+        if not settings.shadow.enabled:
+            log.warning("shadow_disabled")
+            raise RuntimeError("Shadow verification is disabled (SHADOW_ENABLED=false)")
+
         if self.active_count >= self.max_concurrent:
-            msg = f"Max concurrent shadows ({self.max_concurrent}) exceeded"
-            log.error(msg)
-            raise RuntimeError(msg)
+            log.error("shadow_max_concurrent_exceeded", max_concurrent=self.max_concurrent)
+            raise RuntimeError(f"Max concurrent shadows ({self.max_concurrent}) exceeded")
 
         # Generate shadow ID if not provided
         if not shadow_id:
@@ -230,6 +250,17 @@ class ShadowManager:
         self._environments[env.id] = env
         env.logs.append(f"Creating shadow environment: {env.id}")
 
+        annotations = {
+            SHADOW_ID_ANNOTATION: sanitized_id,
+            SHADOW_SOURCE_NAMESPACE_ANNOTATION: source_namespace,
+            SHADOW_SOURCE_NAME_ANNOTATION: source_resource,
+            SHADOW_SOURCE_KIND_ANNOTATION: source_resource_kind,
+            SHADOW_RUNTIME_ANNOTATION: self.runtime,
+            SHADOW_TARGET_NAMESPACE_ANNOTATION: target_namespace,
+            SHADOW_STATUS_ANNOTATION: ShadowStatus.CREATING.value,
+            SHADOW_CREATED_AT_ANNOTATION: env.created_at.isoformat(),
+        }
+
         if self.runtime != SandBoxRuntime.VCLUSTER.value:
             msg = (
                 f"Shadow runtime '{self.runtime}' is not supported for real cluster "
@@ -251,7 +282,11 @@ class ShadowManager:
 
         try:
             # Create host namespace for vCluster
-            await self._create_namespace(shadow_namespace, core_api=self._core_api)
+            await self._create_namespace(
+                shadow_namespace,
+                core_api=self._core_api,
+                annotations=annotations,
+            )
             env.logs.append(f"Host namespace {shadow_namespace} created")
 
             # Create vCluster
@@ -261,6 +296,10 @@ class ShadowManager:
                 shadow_namespace,
             )
             env.logs.append("vCluster created")
+
+            # Wait for vCluster resources to be ready
+            await self._wait_for_vcluster_resources(env.id, shadow_namespace)
+            env.logs.append("vCluster resources ready")
 
             # Get vCluster kubeconfig and build shadow clients
             kubeconfig_path = await self._write_vcluster_kubeconfig(env.id, shadow_namespace)
@@ -289,6 +328,7 @@ class ShadowManager:
             env.logs.append(f"Cloned {source_resource_kind}/{source_resource} into vCluster")
 
             env.status = ShadowStatus.READY
+            await self._update_shadow_status(env)
             log.info(
                 "shadow_created",
                 shadow_id=sanitized_id,
@@ -302,6 +342,7 @@ class ShadowManager:
             env.status = ShadowStatus.ERROR
             env.error = str(e)
             log.exception("shadow_creation_failed")
+            await self._update_shadow_status(env, message=str(e))
             await self._best_effort_cleanup(env)
             raise
 
@@ -314,120 +355,79 @@ class ShadowManager:
         duration: int | None = None,
         verification_plan: VerificationPlan | None = None,
     ) -> bool:
-        """Run verification tests in shadow environment.
-
-        Args:
-            shadow_id: ID of the shadow environment
-            changes: Changes to apply for testing
-            duration: Verification duration in seconds (default from settings)
-            verification_plan: Optional verification plan for smoke/load testing
-
-        Returns:
-            bool: True if verification passed, False otherwise
-        """
-        env = self._environments.get(shadow_id)
+        """Run verification tests in shadow environment."""
+        env = self.get_environment(shadow_id)
         if not env:
             raise ValueError(f"Shadow environment {shadow_id} not found")
 
-        if env.status != ShadowStatus.READY:
-            raise RuntimeError(f"Shadow {shadow_id} not ready: {env.status}")
+        shadow_clients = await self._shadow_clients_for_verification(env, shadow_id)
 
-        shadow_clients = self._shadow_clients.get(env.id)
-        if not shadow_clients:
-            raise RuntimeError(f"Shadow clients not initialized for {shadow_id}")
-
-        env.status = ShadowStatus.TESTING
-        env.logs.append("Starting verification tests")
         duration = duration or self.verification_timeout
+        env.status = ShadowStatus.TESTING
+        await self._update_shadow_status(env)
+        env.logs.append("Starting verification tests")
 
-        # Determine fix type from changes
-        fix_type = "unknown"
-        if "replicas" in changes:
-            fix_type = "scale"
-        elif "image" in changes:
-            fix_type = "rollback"
-        elif "env" in changes:
-            fix_type = "config_change"
-        elif "manifests" in changes:
-            fix_type = "patch"
+        fix_type = self._fix_type_from_changes(changes)
+        security_pipeline = SecurityPipeline()
+        security_results = self._initial_security_results()
+        verification_started_at = datetime.now(UTC)
+
+        passed = False
+        health_score = 0.0
+        smoke_result: dict[str, Any] | None = None
+        load_result: dict[str, Any] | None = None
 
         try:
             # Track verification duration
             with shadow_verification_duration_seconds.time():
-                # Apply changes to shadow environment
-                await self._apply_changes(env, changes, apps_api=shadow_clients.apps)
-                env.logs.append(f"Applied changes: {list(changes.keys())}")
-
-                # Wait for rollout to settle before tests
-                await self._wait_for_rollout(env, apps_api=shadow_clients.apps)
-
-                # Resolve target URL + probe paths for smoke/load tests
-                target_base, probe_paths = await self._resolve_service_target(
-                    env,
-                    apps_api=shadow_clients.apps,
-                    core_api=shadow_clients.core,
-                    preferred_target=verification_plan.load_test_config.target_url
-                    if verification_plan and verification_plan.load_test_config
-                    else None,
+                # Pre-deploy security scan (Kubesec) on manifests
+                kubesec_ok = await self._run_kubesec_predeploy(
+                    env=env,
+                    changes=changes,
+                    security_pipeline=security_pipeline,
+                    security_results=security_results,
                 )
 
-                smoke_result = None
-                if target_base:
-                    smoke_result = await self._run_smoke_test(
+                duration_for_results = 0
+                if kubesec_ok:
+                    # Apply changes to shadow environment
+                    await self._apply_changes(env, changes, apps_api=shadow_clients.apps)
+                    env.logs.append(f"Applied changes: {list(changes.keys())}")
+
+                    # Wait for rollout to settle before tests
+                    await self._wait_for_rollout(env, apps_api=shadow_clients.apps)
+
+                    health_score, smoke_result, load_result = await self._run_verification_tests(
                         env=env,
-                        target_base=target_base,
-                        paths=probe_paths,
-                        core_api=shadow_clients.core,
-                        batch_api=shadow_clients.batch,
+                        shadow_clients=shadow_clients,
+                        duration_seconds=duration,
+                        verification_plan=verification_plan,
                     )
-                    env.logs.append(
-                        f"Smoke test {'passed' if smoke_result['passed'] else 'failed'}"
+                    passed = (
+                        health_score >= HEALTH_THRESHOLD
+                        and (smoke_result is None or smoke_result.get("passed", False))
+                        and (load_result is None or load_result.get("passed", False))
                     )
-                else:
-                    env.logs.append("Smoke test skipped: no target URL resolved")
 
-                load_result = None
-                load_config = self._resolve_load_test_config(
-                    verification_plan=verification_plan,
-                    fallback_base=target_base,
-                    fallback_paths=probe_paths,
-                )
-                if load_config and (smoke_result is None or smoke_result["passed"]):
-                    load_result = await self._run_load_test(
+                    security_passed = await self._run_post_deploy_security(
                         env=env,
-                        config=load_config,
-                        core_api=shadow_clients.core,
-                        batch_api=shadow_clients.batch,
+                        shadow_clients=shadow_clients,
+                        security_pipeline=security_pipeline,
+                        security_results=security_results,
+                        verification_started_at=verification_started_at,
                     )
-                    env.logs.append(f"Load test {'passed' if load_result['passed'] else 'failed'}")
-                elif load_config and smoke_result and not smoke_result["passed"]:
-                    env.logs.append("Load test skipped: smoke test failed")
+                    passed = passed and security_passed
+                    duration_for_results = duration
 
-                # Monitor health for specified duration
-                health_score = await self._monitor_health(
-                    env,
-                    duration,
-                    core_api=shadow_clients.core,
+                await self._store_verification_results(
+                    env=env,
+                    passed=passed,
+                    health_score=health_score,
+                    duration_seconds=duration_for_results,
+                    smoke_result=smoke_result,
+                    load_result=load_result,
+                    security_results=security_results,
                 )
-                env.health_score = health_score
-                env.logs.append(f"Health monitoring complete: score={health_score:.2f}")
-
-                # Evaluate results
-                passed = health_score >= HEALTH_THRESHOLD
-                if smoke_result is not None:
-                    passed = passed and smoke_result["passed"]
-                if load_result is not None:
-                    passed = passed and load_result["passed"]
-
-                env.status = ShadowStatus.PASSED if passed else ShadowStatus.FAILED
-                env.test_results = {
-                    "health_score": health_score,
-                    "duration": duration,
-                    "passed": passed,
-                    "timestamp": datetime.now(UTC).isoformat(),
-                    "smoke_test": smoke_result,
-                    "load_test": load_result,
-                }
 
             # Track verification result
             shadow_verifications_total.labels(
@@ -440,17 +440,199 @@ class ShadowManager:
                 shadow_id=shadow_id,
                 passed=passed,
                 health_score=health_score,
-                smoke_passed=smoke_result["passed"] if smoke_result else None,
-                load_passed=load_result["passed"] if load_result else None,
+                smoke_passed=smoke_result.get("passed") if smoke_result else None,
+                load_passed=load_result.get("passed") if load_result else None,
             )
 
-        except Exception as e:
+        except Exception as exc:
             env.status = ShadowStatus.ERROR
-            env.error = str(e)
+            env.error = str(exc)
             log.exception("verification_failed", shadow_id=shadow_id)
+            await self._update_shadow_status(env, message=str(exc))
             return False
         else:
             return passed
+
+    def _fix_type_from_changes(self, changes: dict[str, Any]) -> str:
+        priority = (
+            ("replicas", "scale"),
+            ("image", "rollback"),
+            ("env", "config_change"),
+            ("manifests", "patch"),
+        )
+        return next((value for key, value in priority if key in changes), "unknown")
+
+    @staticmethod
+    def _initial_security_results() -> dict[str, Any]:
+        return {
+            "passed": True,
+            "kubesec": None,
+            "trivy": None,
+            "falco": None,
+            "errors": [],
+        }
+
+    async def _shadow_clients_for_verification(
+        self, env: ShadowEnvironment, shadow_id: str
+    ) -> ShadowClients:
+        if env.status == ShadowStatus.READY:
+            return await self._ensure_shadow_clients(env)
+
+        if env.status not in {ShadowStatus.CREATING, ShadowStatus.PENDING}:
+            raise RuntimeError(f"Shadow {shadow_id} not ready: {env.status}")
+
+        try:
+            shadow_clients = await self._ensure_shadow_clients(env)
+        except (ApiException, OSError, RuntimeError) as exc:
+            raise RuntimeError(f"Shadow {shadow_id} not ready: {env.status}") from exc
+
+        env.status = ShadowStatus.READY
+        await self._update_shadow_status(env)
+        return shadow_clients
+
+    async def _run_kubesec_predeploy(
+        self,
+        *,
+        env: ShadowEnvironment,
+        changes: dict[str, Any],
+        security_pipeline: SecurityPipeline,
+        security_results: dict[str, Any],
+    ) -> bool:
+        manifests = changes.get("manifests")
+        if not manifests:
+            return True
+
+        kubesec_result = await security_pipeline.scan_manifests(manifests)
+        security_results["kubesec"] = kubesec_result
+        if kubesec_result.get("passed", True):
+            env.logs.append("Kubesec scan passed")
+            return True
+
+        security_results["passed"] = False
+        env.logs.append("Kubesec scan failed")
+        return False
+
+    async def _run_verification_tests(
+        self,
+        *,
+        env: ShadowEnvironment,
+        shadow_clients: ShadowClients,
+        duration_seconds: int,
+        verification_plan: VerificationPlan | None,
+    ) -> tuple[float, dict[str, Any] | None, dict[str, Any] | None]:
+        preferred_target = (
+            verification_plan.load_test_config.target_url
+            if verification_plan and verification_plan.load_test_config
+            else None
+        )
+        target_base, probe_paths = await self._resolve_service_target(
+            env,
+            apps_api=shadow_clients.apps,
+            core_api=shadow_clients.core,
+            preferred_target=preferred_target,
+        )
+
+        smoke_result = None
+        if target_base:
+            smoke_result = await self._run_smoke_test(
+                env=env,
+                target_base=target_base,
+                paths=probe_paths,
+                core_api=shadow_clients.core,
+                batch_api=shadow_clients.batch,
+            )
+            env.logs.append(f"Smoke test {'passed' if smoke_result['passed'] else 'failed'}")
+        else:
+            env.logs.append("Smoke test skipped: no target URL resolved")
+
+        load_result = None
+        load_config = self._resolve_load_test_config(
+            verification_plan=verification_plan,
+            fallback_base=target_base,
+            fallback_paths=probe_paths,
+        )
+        if load_config and (smoke_result is None or smoke_result["passed"]):
+            load_result = await self._run_load_test(
+                env=env,
+                config=load_config,
+                core_api=shadow_clients.core,
+                batch_api=shadow_clients.batch,
+            )
+            env.logs.append(f"Load test {'passed' if load_result['passed'] else 'failed'}")
+        elif load_config and smoke_result and not smoke_result["passed"]:
+            env.logs.append("Load test skipped: smoke test failed")
+
+        health_score = await self._monitor_health(
+            env,
+            duration_seconds,
+            core_api=shadow_clients.core,
+        )
+        env.health_score = health_score
+        env.logs.append(f"Health monitoring complete: score={health_score:.2f}")
+        return health_score, smoke_result, load_result
+
+    async def _run_post_deploy_security(
+        self,
+        *,
+        env: ShadowEnvironment,
+        shadow_clients: ShadowClients,
+        security_pipeline: SecurityPipeline,
+        security_results: dict[str, Any],
+        verification_started_at: datetime,
+    ) -> bool:
+        images = await self._resolve_images_for_resource(
+            env,
+            apps_api=shadow_clients.apps,
+            core_api=shadow_clients.core,
+        )
+        if images:
+            trivy_result = await security_pipeline.scan_images(images)
+            security_results["trivy"] = trivy_result
+            if not trivy_result.get("passed", True):
+                security_results["passed"] = False
+                env.logs.append("Trivy scan failed")
+            else:
+                env.logs.append("Trivy scan passed")
+
+        falco_namespace = env.host_namespace or env.namespace
+        falco_since_minutes = max(
+            1,
+            int((datetime.now(UTC) - verification_started_at).total_seconds() / 60),
+        )
+        falco_result = await security_pipeline.check_runtime_alerts(
+            falco_namespace,
+            core_api=self._core_api,
+            since_minutes=falco_since_minutes,
+        )
+        security_results["falco"] = falco_result
+        if falco_result and not falco_result.get("passed", True):
+            security_results["passed"] = False
+            env.logs.append("Falco alerts detected")
+
+        return bool(security_results["passed"])
+
+    async def _store_verification_results(
+        self,
+        *,
+        env: ShadowEnvironment,
+        passed: bool,
+        health_score: float,
+        duration_seconds: int,
+        smoke_result: dict[str, Any] | None,
+        load_result: dict[str, Any] | None,
+        security_results: dict[str, Any],
+    ) -> None:
+        env.status = ShadowStatus.PASSED if passed else ShadowStatus.FAILED
+        await self._update_shadow_status(env)
+        env.test_results = {
+            "health_score": health_score,
+            "duration": duration_seconds,
+            "passed": passed,
+            "timestamp": datetime.now(UTC).isoformat(),
+            "smoke_test": smoke_result,
+            "load_test": load_result,
+            "security": security_results,
+        }
 
     async def cleanup(self, shadow_id: str) -> None:
         """Cleanup shadow environment.
@@ -458,12 +640,13 @@ class ShadowManager:
         Args:
             shadow_id: ID of the shadow environment to cleanup
         """
-        env = self._environments.get(shadow_id)
+        env = self.get_environment(shadow_id)
         if not env:
             log.warning("shadow_not_found", shadow_id=shadow_id)
             return
 
         env.status = ShadowStatus.CLEANING
+        await self._update_shadow_status(env)
         env.logs.append("Cleaning up shadow environment")
 
         try:
@@ -473,6 +656,7 @@ class ShadowManager:
                 # Delete namespace (cascades to all resources)
                 await self._delete_namespace(env.namespace)
             env.status = ShadowStatus.DELETED
+            await self._update_shadow_status(env)
             log.info("shadow_cleaned", shadow_id=shadow_id)
 
             # Decrement active shadow counter
@@ -486,11 +670,167 @@ class ShadowManager:
 
     def get_environment(self, shadow_id: str) -> ShadowEnvironment | None:
         """Get shadow environment by ID."""
-        return self._environments.get(shadow_id)
+        env = self._environments.get(shadow_id)
+        if not env:
+            env = self._environments.get(self._sanitize_name(shadow_id))
+        if env:
+            return env
+        discovered = self._discover_environment(shadow_id)
+        if discovered:
+            self._environments[discovered.id] = discovered
+        return discovered
 
     def list_environments(self) -> list[ShadowEnvironment]:
         """List all shadow environments."""
+        discovered = self._discover_environments()
+        for env in discovered:
+            existing = self._environments.get(env.id)
+            if not existing:
+                self._environments[env.id] = env
+            else:
+                existing.host_namespace = existing.host_namespace or env.host_namespace
+                existing.runtime = existing.runtime or env.runtime
+                existing.namespace = existing.namespace or env.namespace
+                if existing.status in {ShadowStatus.PENDING, ShadowStatus.CREATING}:
+                    existing.status = env.status
         return list(self._environments.values())
+
+    async def wait_for_ready(
+        self,
+        shadow_id: str,
+        timeout_seconds: int | None = None,
+        poll_interval: float = 3.0,
+    ) -> ShadowEnvironment:
+        """Wait until a shadow environment is ready."""
+        env = self.get_environment(shadow_id)
+        if not env:
+            raise ValueError(f"Shadow environment {shadow_id} not found")
+
+        timeout = timeout_seconds or self.verification_timeout
+        start = time.monotonic()
+        last_error: Exception | None = None
+
+        while time.monotonic() - start < timeout:
+            try:
+                await self._ensure_shadow_clients(env)
+            except (ApiException, OSError, RuntimeError) as exc:
+                last_error = exc
+                await asyncio.sleep(poll_interval)
+            else:
+                env.status = ShadowStatus.READY
+                await self._update_shadow_status(env)
+                return env
+
+        msg = f"Shadow {shadow_id} not ready after {timeout}s"
+        if last_error:
+            msg = f"{msg}: {last_error}"
+        raise RuntimeError(msg)
+
+    def _discover_environments(self) -> list[ShadowEnvironment]:
+        """Discover shadow environments by namespace labels."""
+        try:
+            namespaces = self._core_api.list_namespace(label_selector=f"{SHADOW_LABEL_KEY}=true")
+        except ApiException as exc:
+            log.debug("shadow_discovery_failed", error=str(exc))
+            return []
+
+        discovered: list[ShadowEnvironment] = []
+        for ns in namespaces.items:
+            if not ns.metadata or not ns.metadata.name:
+                continue
+            discovered.append(self._namespace_to_env(ns))
+        return discovered
+
+    def _discover_environment(self, shadow_id: str) -> ShadowEnvironment | None:
+        """Discover a single shadow environment by ID."""
+        sanitized_id = self._sanitize_name(shadow_id)
+        host_namespace = self._build_shadow_namespace(sanitized_id)
+        try:
+            namespace = self._core_api.read_namespace(host_namespace)
+        except ApiException as exc:
+            if exc.status == HTTP_NOT_FOUND:
+                return None
+            raise
+        return self._namespace_to_env(namespace, fallback_id=sanitized_id)
+
+    def _namespace_to_env(
+        self,
+        namespace: client.V1Namespace,
+        fallback_id: str | None = None,
+    ) -> ShadowEnvironment:
+        """Build a ShadowEnvironment model from a namespace object."""
+        metadata = namespace.metadata or client.V1ObjectMeta()
+        annotations = metadata.annotations or {}
+
+        shadow_id = (
+            annotations.get(SHADOW_ID_ANNOTATION)
+            or fallback_id
+            or self._derive_shadow_id(metadata.name)
+        )
+        runtime = annotations.get(SHADOW_RUNTIME_ANNOTATION) or self.runtime
+        source_namespace = annotations.get(SHADOW_SOURCE_NAMESPACE_ANNOTATION) or ""
+        source_name = annotations.get(SHADOW_SOURCE_NAME_ANNOTATION) or ""
+        source_kind = annotations.get(SHADOW_SOURCE_KIND_ANNOTATION) or "Deployment"
+        target_namespace = (
+            annotations.get(SHADOW_TARGET_NAMESPACE_ANNOTATION)
+            or source_namespace
+            or metadata.name
+            or shadow_id
+        )
+
+        status = ShadowStatus.CREATING
+        status_value = annotations.get(SHADOW_STATUS_ANNOTATION)
+        if status_value:
+            try:
+                status = ShadowStatus(status_value)
+            except ValueError:
+                status = ShadowStatus.CREATING
+
+        if metadata.deletion_timestamp:
+            status = ShadowStatus.CLEANING
+
+        created_at = metadata.creation_timestamp or datetime.now(UTC)
+        env = ShadowEnvironment(
+            id=shadow_id,
+            namespace=target_namespace,
+            source_namespace=source_namespace or target_namespace,
+            source_resource=source_name or shadow_id,
+            source_resource_kind=source_kind,
+            status=status,
+            created_at=created_at,
+            runtime=runtime,
+            host_namespace=metadata.name,
+        )
+
+        if (
+            env.status == ShadowStatus.CREATING
+            and runtime == SandBoxRuntime.VCLUSTER.value
+            and self._vcluster_secret_exists(metadata.name)
+        ):
+            env.status = ShadowStatus.READY
+
+        return env
+
+    def _derive_shadow_id(self, namespace_name: str | None) -> str:
+        if not namespace_name:
+            return "shadow"
+        prefix = self._namespace_prefix
+        if namespace_name.startswith(prefix):
+            return namespace_name[len(prefix) :] or namespace_name
+        return namespace_name
+
+    def _vcluster_secret_exists(self, namespace: str | None) -> bool:
+        if not namespace:
+            return False
+        try:
+            self._core_api.read_namespaced_secret(VCLUSTER_KUBECONFIG_NAME, namespace)
+        except ApiException as exc:
+            if exc.status == HTTP_NOT_FOUND:
+                return False
+            log.debug("shadow_secret_lookup_failed", namespace=namespace, error=str(exc))
+            return False
+        else:
+            return True
 
     # ========================================================================
     # Private helpers
@@ -564,47 +904,375 @@ class ShadowManager:
             custom=client.CustomObjectsApi(api_client),
         )
 
+    async def _ensure_shadow_clients(self, env: ShadowEnvironment) -> ShadowClients:
+        """Ensure API clients are available for the shadow environment."""
+        cached = self._shadow_clients.get(env.id)
+        if cached:
+            return cached
+
+        if env.runtime != SandBoxRuntime.VCLUSTER.value:
+            raise RuntimeError("Shadow runtime not supported for client hydration")
+        if not env.host_namespace:
+            raise RuntimeError("Shadow host namespace not set")
+
+        kubeconfig_path = env.kubeconfig_path or await self._write_vcluster_kubeconfig(
+            env.id, env.host_namespace
+        )
+        env.kubeconfig_path = kubeconfig_path
+        shadow_clients = self._build_shadow_clients(kubeconfig_path)
+        self._shadow_clients[env.id] = shadow_clients
+
+        # Ensure API is reachable and namespace exists
+        await self._wait_for_vcluster_api(shadow_clients.core, env.id)
+        await self._create_namespace(env.namespace, core_api=shadow_clients.core)
+
+        return shadow_clients
+
     async def _write_vcluster_kubeconfig(self, name: str, namespace: str) -> str:
-        """Fetch vCluster kubeconfig and persist it to a temp file."""
+        """Fetch vCluster kubeconfig and persist it to a temp file.
+
+        Uses the kubeconfig secret when available to avoid localhost-only configs,
+        then rewrites the server to the host API proxy so the config works from
+        outside the cluster.
+        """
+        kubeconfig = None
+
+        # Try to get kubeconfig from secret with retries (secret creation may lag)
+        for attempt in range(VCLUSTER_KUBECONFIG_SECRET_MAX_ATTEMPTS):
+            try:
+                kubeconfig = await self._get_vcluster_kubeconfig_from_secret(name, namespace)
+                log.info(
+                    "vcluster_kubeconfig_loaded", source="secret", shadow=name, attempt=attempt + 1
+                )
+                break
+            except RuntimeError as e:
+                if attempt < VCLUSTER_KUBECONFIG_SECRET_MAX_ATTEMPTS - 1:
+                    log.debug(
+                        "vcluster_kubeconfig_secret_retry",
+                        shadow=name,
+                        attempt=attempt + 1,
+                        error=str(e),
+                    )
+                    await asyncio.sleep(5)
+                else:
+                    log.warning(
+                        "vcluster_kubeconfig_secret_failed",
+                        shadow=name,
+                        namespace=namespace,
+                        error=str(e),
+                    )
+
+        if kubeconfig is None:
+            try:
+                kubeconfig = await self._call_api(
+                    self._vcluster_manager.get_kubeconfig, name, namespace
+                )
+                log.info("vcluster_kubeconfig_loaded", source="cli", shadow=name)
+            except RuntimeError as e:
+                log.exception(
+                    "vcluster_kubeconfig_cli_failed",
+                    shadow=name,
+                    namespace=namespace,
+                    error=str(e),
+                )
+                raise
+
+        rendered = kubeconfig
         try:
-            kubeconfig = await self._call_api(
-                self._vcluster_manager.get_kubeconfig, name, namespace
-            )
-        except RuntimeError as e:
-            log.warning(
-                "vcluster_kubeconfig_cli_failed",
-                shadow=name,
+            parsed = yaml.safe_load(kubeconfig) if kubeconfig else None
+        except yaml.YAMLError as exc:
+            log.warning("vcluster_kubeconfig_parse_failed", shadow=name, error=str(exc))
+            parsed = None
+
+        if isinstance(parsed, dict):
+            proxy_config = await self._build_vcluster_proxy_kubeconfig(
+                parsed,
+                shadow_name=name,
                 namespace=namespace,
-                error=str(e),
             )
-            kubeconfig = await self._get_vcluster_kubeconfig_from_secret(namespace)
+            if proxy_config:
+                rendered = yaml.safe_dump(proxy_config, sort_keys=False)
 
         with tempfile.NamedTemporaryFile(mode="w", delete=False, suffix=".yaml") as handle:
-            handle.write(kubeconfig)
+            handle.write(rendered)
             return handle.name
 
-    async def _get_vcluster_kubeconfig_from_secret(self, namespace: str) -> str:
-        """Fallback: read kubeconfig from vCluster secret in host namespace."""
+    async def _get_vcluster_kubeconfig_from_secret(self, name: str, namespace: str) -> str:
+        """Read kubeconfig from vCluster secret in host namespace."""
+        secret_names = [VCLUSTER_KUBECONFIG_NAME, f"{name}-kubeconfig", f"vc-{name}-kubeconfig"]
+
+        for secret_name in secret_names:
+            try:
+                secret = cast(
+                    client.V1Secret,
+                    await self._call_api(
+                        self._core_api.read_namespaced_secret,
+                        secret_name,
+                        namespace,
+                    ),
+                )
+            except ApiException as e:
+                if e.status != HTTP_NOT_FOUND:
+                    log.warning(
+                        "vcluster_kubeconfig_secret_read_failed",
+                        secret=secret_name,
+                        namespace=namespace,
+                        error=str(e),
+                    )
+                continue
+
+            data = secret.data or {}
+            for key in ("config", "kubeconfig", "kubeconfig.yaml"):
+                if key in data:
+                    return base64.b64decode(data[key]).decode()
+
+        # Fallback: search for any kubeconfig-like secret in namespace
         try:
-            secret = cast(
-                client.V1Secret,
-                await self._call_api(
-                    self._core_api.read_namespaced_secret,
-                    VCLUSTER_KUBECONFIG_NAME,
-                    namespace,
-                ),
+            secrets = cast(
+                client.V1SecretList,
+                await self._call_api(self._core_api.list_namespaced_secret, namespace),
             )
         except ApiException as e:
-            msg = f"Failed to read vCluster kubeconfig secret: {e}"
-            log.exception("vcluster_kubeconfig_secret_read_failed", error=str(e))
+            msg = f"Failed to list secrets in {namespace}: {e}"
+            log.exception("vcluster_kubeconfig_secret_list_failed", error=str(e))
             raise RuntimeError(msg) from e
 
-        data = secret.data or {}
-        for key in ("config", "kubeconfig", "kubeconfig.yaml"):
-            if key in data:
-                return base64.b64decode(data[key]).decode()
+        for secret in secrets.items:
+            if not secret.metadata or not secret.data:
+                continue
+            for key in ("config", "kubeconfig", "kubeconfig.yaml"):
+                if key in (secret.data or {}):
+                    log.info(
+                        "vcluster_kubeconfig_secret_discovered",
+                        secret=secret.metadata.name,
+                        namespace=namespace,
+                    )
+                    return base64.b64decode(secret.data[key]).decode()
 
         raise RuntimeError("vCluster kubeconfig secret missing expected data keys")
+
+    async def _build_vcluster_proxy_kubeconfig(
+        self,
+        vcluster_kubeconfig: dict[str, Any],
+        *,
+        shadow_name: str,
+        namespace: str,
+    ) -> dict[str, Any] | None:
+        """Rewrite vCluster kubeconfig to use host API proxy for connectivity."""
+        service_name, service_port = await self._resolve_vcluster_service(
+            vcluster_kubeconfig,
+            shadow_name=shadow_name,
+            namespace=namespace,
+        )
+        if not service_name or not service_port:
+            log.warning(
+                "vcluster_service_not_found",
+                shadow=shadow_name,
+                namespace=namespace,
+            )
+            return None
+
+        host_cfg = self._load_host_kubeconfig()
+        if not host_cfg:
+            log.warning("host_kubeconfig_missing", shadow=shadow_name)
+            return None
+
+        context_name = host_cfg.get("current-context") or ""
+        contexts = host_cfg.get("contexts") or []
+        clusters = host_cfg.get("clusters") or []
+        users = host_cfg.get("users") or []
+
+        context = next((c for c in contexts if c.get("name") == context_name), None)
+        if not context:
+            context = contexts[0] if contexts else None
+        if not context:
+            log.warning("host_kubeconfig_context_missing", shadow=shadow_name)
+            return None
+
+        cluster_name = context.get("context", {}).get("cluster")
+        user_name = context.get("context", {}).get("user")
+        cluster_entry = next((c for c in clusters if c.get("name") == cluster_name), None)
+        user_entry = next((u for u in users if u.get("name") == user_name), None)
+        if not cluster_entry or not user_entry:
+            log.warning("host_kubeconfig_entry_missing", shadow=shadow_name)
+            return None
+
+        cluster_config = copy.deepcopy(cluster_entry.get("cluster", {}))
+        host_server = cluster_config.get("server")
+        if not host_server:
+            log.warning("host_kubeconfig_server_missing", shadow=shadow_name)
+            return None
+
+        parsed_server = urlparse(host_server)
+        if not parsed_server.scheme:
+            host_server = f"https://{host_server.lstrip('/')}"
+            cluster_config["server"] = host_server
+        elif parsed_server.scheme == "http":
+            host_server = host_server.replace("http://", "https://", 1)
+            cluster_config["server"] = host_server
+            if not (
+                cluster_config.get("certificate-authority-data")
+                or cluster_config.get("certificate-authority")
+            ):
+                cluster_config["insecure-skip-tls-verify"] = True
+
+        # vCluster typically runs on HTTPS - use https: prefix in service proxy URL
+        # Format: /api/v1/namespaces/{ns}/services/https:{svc-name}:{port}/proxy
+        protocol = "https" if service_port in (443, 8443) else "http"
+        proxy_server = (
+            f"{host_server.rstrip('/')}"
+            f"/api/v1/namespaces/{namespace}/services/{protocol}:{service_name}:{service_port}/proxy"
+        )
+        cluster_config["server"] = proxy_server
+
+        # vCluster uses self-signed certs, skip TLS verification for proxy connections
+        if protocol == "https" and not (
+            cluster_config.get("certificate-authority-data")
+            or cluster_config.get("certificate-authority")
+        ):
+            cluster_config["insecure-skip-tls-verify"] = True
+
+        # Extract vCluster user credentials (not host credentials)
+        vcluster_users = vcluster_kubeconfig.get("users") or []
+        vcluster_user = vcluster_users[0] if vcluster_users else None
+        if not vcluster_user:
+            log.warning("vcluster_kubeconfig_missing_user", shadow=shadow_name)
+            return None
+
+        proxy_context_name = f"vcluster-{shadow_name}"
+        proxy_cluster_name = f"{proxy_context_name}-cluster"
+        proxy_user_name = vcluster_user.get("name", "vcluster-user")
+
+        return {
+            "apiVersion": "v1",
+            "kind": "Config",
+            "clusters": [
+                {
+                    "name": proxy_cluster_name,
+                    "cluster": cluster_config,
+                }
+            ],
+            "contexts": [
+                {
+                    "name": proxy_context_name,
+                    "context": {
+                        "cluster": proxy_cluster_name,
+                        "user": proxy_user_name,
+                        "namespace": context.get("context", {}).get("namespace"),
+                    },
+                }
+            ],
+            "current-context": proxy_context_name,
+            "users": [vcluster_user],
+        }
+
+    def _load_host_kubeconfig(self) -> dict[str, Any] | None:
+        """Load the host kubeconfig from disk."""
+        candidates: list[str] = []
+        if settings.kubernetes.kubeconfig_path:
+            candidates.append(settings.kubernetes.kubeconfig_path)
+        else:
+            env_config = os.getenv("KUBECONFIG")
+            if env_config:
+                candidates.extend(env_config.split(os.pathsep))
+            else:
+                candidates.append(str(Path.home() / ".kube" / "config"))
+
+        for path in candidates:
+            if not path:
+                continue
+            cfg_path = Path(path).expanduser()
+            if not cfg_path.exists():
+                continue
+            try:
+                parsed = yaml.safe_load(cfg_path.read_text())
+                return cast(dict[str, Any], parsed) if isinstance(parsed, dict) else None
+            except (OSError, yaml.YAMLError) as exc:
+                log.warning("host_kubeconfig_read_failed", path=str(cfg_path), error=str(exc))
+                continue
+        return None
+
+    async def _resolve_vcluster_service(
+        self,
+        vcluster_kubeconfig: dict[str, Any],
+        *,
+        shadow_name: str,
+        namespace: str,
+    ) -> tuple[str | None, int | None]:
+        """Resolve the vCluster service name/port for API proxy."""
+        server = self._extract_server_from_kubeconfig(vcluster_kubeconfig)
+        if server:
+            svc_name, svc_port = self._service_from_server(server)
+            if svc_name:
+                return svc_name, svc_port or 443
+        for _ in range(5):
+            try:
+                services = cast(
+                    client.V1ServiceList,
+                    await self._call_api(self._core_api.list_namespaced_service, namespace),
+                )
+            except ApiException as e:
+                log.warning("vcluster_service_list_failed", namespace=namespace, error=str(e))
+                return None, None
+
+            candidates: list[client.V1Service] = []
+            for svc in services.items:
+                if not svc.metadata:
+                    continue
+                labels = svc.metadata.labels or {}
+                if labels.get("app.kubernetes.io/instance") == shadow_name:
+                    candidates.append(svc)
+                    continue
+                if svc.metadata.name in {shadow_name, f"vcluster-{shadow_name}"}:
+                    candidates.append(svc)
+                    continue
+                if shadow_name in svc.metadata.name:
+                    candidates.append(svc)
+
+            service = candidates[0] if candidates else None
+            if service:
+                port = self._select_vcluster_service_port(
+                    service.spec.ports if service.spec else None
+                )
+                return service.metadata.name, port
+
+            await asyncio.sleep(2)
+
+        return None, None
+
+    @staticmethod
+    def _extract_server_from_kubeconfig(kubeconfig: dict[str, Any]) -> str | None:
+        clusters = kubeconfig.get("clusters") or []
+        if not clusters:
+            return None
+        cluster = clusters[0].get("cluster") if isinstance(clusters[0], dict) else None
+        if not isinstance(cluster, dict):
+            return None
+        return cluster.get("server")
+
+    @staticmethod
+    def _service_from_server(server: str) -> tuple[str | None, int | None]:
+        parsed = urlparse(server)
+        host = parsed.hostname
+        if not host or host in {"127.0.0.1", "localhost"}:
+            return None, parsed.port
+        svc = host.split(".")[0] if host else None
+        return svc, parsed.port
+
+    @staticmethod
+    def _select_vcluster_service_port(
+        ports: Iterable[client.V1ServicePort] | None,
+    ) -> int | None:
+        if not ports:
+            return None
+        for port in ports:
+            if port.name == "https" and port.port is not None:
+                return int(port.port)
+        for port in ports:
+            if port.port in (443, 8443) and port.port is not None:
+                return int(port.port)
+        first_port = next(iter(ports))
+        return int(first_port.port) if first_port.port is not None else None
 
     async def _delete_vcluster(self, env: ShadowEnvironment) -> None:
         """Delete vCluster and its host namespace."""
@@ -629,6 +1297,38 @@ class ShadowManager:
             except (OSError, RuntimeError) as exc:
                 log.debug("shadow_client_close_failed", shadow_id=shadow_id, error=str(exc))
 
+    async def _update_shadow_status(
+        self,
+        env: ShadowEnvironment,
+        message: str | None = None,
+    ) -> None:
+        """Persist shadow status on the host namespace for discovery."""
+        host_namespace = env.host_namespace or env.namespace
+        if not host_namespace:
+            return
+
+        annotations = {
+            SHADOW_STATUS_ANNOTATION: env.status.value,
+            SHADOW_STATUS_UPDATED_AT: datetime.now(UTC).isoformat(),
+        }
+        if message:
+            annotations["aegis.io/shadow-status-message"] = message[:500]
+
+        patch = {"metadata": {"annotations": annotations}}
+        try:
+            await self._call_api(
+                self._core_api.patch_namespace,
+                name=host_namespace,
+                body=patch,
+            )
+        except ApiException as exc:
+            log.debug(
+                "shadow_status_update_failed",
+                shadow_id=env.id,
+                namespace=host_namespace,
+                error=str(exc),
+            )
+
     async def _best_effort_cleanup(self, env: ShadowEnvironment) -> None:
         """Attempt cleanup after a failed shadow creation."""
         try:
@@ -640,6 +1340,124 @@ class ShadowManager:
             log.warning("shadow_cleanup_failed", shadow_id=env.id)
         finally:
             self._dispose_shadow_clients(env.id)
+
+    async def _wait_for_vcluster_resources(
+        self,
+        shadow_name: str,
+        namespace: str,
+        timeout_seconds: int = 120,
+        poll_interval: float = 3.0,
+    ) -> None:
+        """Wait for vCluster StatefulSet and Service to be created and ready.
+
+        Args:
+            shadow_name: Name of the vCluster
+            namespace: Host namespace where vCluster is deployed
+            timeout_seconds: Maximum time to wait for resources
+            poll_interval: Seconds between checks
+        """
+        start = time.monotonic()
+        statefulset_ready = False
+        service_ready = False
+
+        while time.monotonic() - start < timeout_seconds:
+            # Check for StatefulSet
+            if not statefulset_ready:
+                try:
+                    statefulsets = await self._call_api(
+                        self._apps_api.list_namespaced_stateful_set,
+                        namespace,
+                    )
+                    for sts in statefulsets.items:
+                        if not sts.metadata:
+                            continue
+                        labels = sts.metadata.labels or {}
+                        if (
+                            labels.get("app.kubernetes.io/instance") == shadow_name
+                            or sts.metadata.name == shadow_name
+                            or shadow_name in sts.metadata.name
+                        ):
+                            # Check if StatefulSet is ready
+                            # Use getattr for compatibility with different client versions
+                            ready_count = (
+                                getattr(sts.status, "ready_replicas", 0) if sts.status else 0
+                            )
+                            if ready_count and ready_count > 0:
+                                statefulset_ready = True
+                                log.debug(
+                                    "vcluster_statefulset_ready",
+                                    shadow=shadow_name,
+                                    namespace=namespace,
+                                    ready_replicas=ready_count,
+                                )
+                            else:
+                                # Log current state for debugging
+                                log.debug(
+                                    "vcluster_statefulset_not_ready",
+                                    shadow=shadow_name,
+                                    ready_replicas=ready_count,
+                                    replicas=getattr(sts.status, "replicas", 0)
+                                    if sts.status
+                                    else 0,
+                                )
+                            break
+                except ApiException as exc:
+                    log.debug(
+                        "vcluster_statefulset_check_failed",
+                        shadow=shadow_name,
+                        error=str(exc),
+                    )
+
+            # Check for Service
+            if not service_ready:
+                try:
+                    services = await self._call_api(
+                        self._core_api.list_namespaced_service,
+                        namespace,
+                    )
+                    for svc in services.items:
+                        if not svc.metadata:
+                            continue
+                        labels = svc.metadata.labels or {}
+                        if (
+                            labels.get("app.kubernetes.io/instance") == shadow_name
+                            or svc.metadata.name == shadow_name
+                            or shadow_name in svc.metadata.name
+                        ):
+                            service_ready = True
+                            log.debug(
+                                "vcluster_service_ready",
+                                shadow=shadow_name,
+                                namespace=namespace,
+                            )
+                            break
+                except ApiException as exc:
+                    log.debug(
+                        "vcluster_service_check_failed",
+                        shadow=shadow_name,
+                        error=str(exc),
+                    )
+
+            if statefulset_ready and service_ready:
+                log.info(
+                    "vcluster_resources_ready",
+                    shadow=shadow_name,
+                    namespace=namespace,
+                    elapsed=round(time.monotonic() - start, 1),
+                )
+                return
+
+            await asyncio.sleep(poll_interval)
+
+        error_msg = f"vCluster resources not ready after {timeout_seconds}s (StatefulSet: {statefulset_ready}, Service: {service_ready})"
+        log.error(
+            "vcluster_resources_timeout",
+            shadow_id=shadow_name,
+            timeout=timeout_seconds,
+            statefulset_ready=statefulset_ready,
+            service_ready=service_ready,
+        )
+        raise RuntimeError(error_msg)
 
     async def _wait_for_vcluster_api(
         self,
@@ -682,15 +1500,26 @@ class ShadowManager:
         log.error("vcluster_api_timeout", shadow_id=shadow_id, timeout=timeout_seconds)
         raise RuntimeError(error_msg)
 
-    async def _create_namespace(self, name: str, core_api: client.CoreV1Api | None = None) -> None:
+    async def _create_namespace(
+        self,
+        name: str,
+        core_api: client.CoreV1Api | None = None,
+        labels: dict[str, str] | None = None,
+        annotations: dict[str, str] | None = None,
+    ) -> None:
         """Create namespace for shadow environment."""
+        merged_labels = {
+            SHADOW_LABEL_KEY: "true",
+            SHADOW_MANAGED_BY_LABEL: "aegis-operator",
+        }
+        if labels:
+            merged_labels.update(labels)
+
         namespace = client.V1Namespace(
             metadata=client.V1ObjectMeta(
                 name=name,
-                labels={
-                    "aegis.io/shadow": "true",
-                    "aegis.io/managed-by": "aegis-operator",
-                },
+                labels=merged_labels,
+                annotations=annotations or {},
             )
         )
 
@@ -1062,7 +1891,7 @@ class ShadowManager:
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
-        stdout, stderr = await process.communicate(input=manifest_blob.encode())
+        _stdout, stderr = await process.communicate(input=manifest_blob.encode())
         if process.returncode != 0:
             stderr_text = stderr.decode(errors="replace").strip() if stderr else ""
             log.warning(
@@ -1531,6 +2360,74 @@ class ShadowManager:
             "success_rate": success_rate,
             "logs": logs,
         }
+
+    async def _resolve_images_for_resource(
+        self,
+        env: ShadowEnvironment,
+        *,
+        apps_api: client.AppsV1Api,
+        core_api: client.CoreV1Api,
+    ) -> list[str]:
+        """Resolve container images for the workload under verification."""
+        kind = env.source_resource_kind.lower()
+        images: list[str] = []
+
+        try:
+            if kind == "deployment":
+                deployment = await self._call_api(
+                    apps_api.read_namespaced_deployment, env.source_resource, env.namespace
+                )
+                images = self._extract_images_from_pod_spec(
+                    deployment.spec.template.spec if deployment.spec else None
+                )
+            elif kind == "statefulset":
+                statefulset = await self._call_api(
+                    apps_api.read_namespaced_stateful_set, env.source_resource, env.namespace
+                )
+                images = self._extract_images_from_pod_spec(
+                    statefulset.spec.template.spec if statefulset.spec else None
+                )
+            elif kind == "daemonset":
+                daemonset = await self._call_api(
+                    apps_api.read_namespaced_daemon_set, env.source_resource, env.namespace
+                )
+                images = self._extract_images_from_pod_spec(
+                    daemonset.spec.template.spec if daemonset.spec else None
+                )
+            elif kind == "replicaset":
+                replicaset = await self._call_api(
+                    apps_api.read_namespaced_replica_set, env.source_resource, env.namespace
+                )
+                images = self._extract_images_from_pod_spec(
+                    replicaset.spec.template.spec if replicaset.spec else None
+                )
+            elif kind == "pod":
+                pod = await self._call_api(
+                    core_api.read_namespaced_pod, env.source_resource, env.namespace
+                )
+                images = self._extract_images_from_pod_spec(pod.spec if pod else None)
+            else:
+                pods = await self._call_api(
+                    core_api.list_namespaced_pod,
+                    env.namespace,
+                    label_selector=f"aegis.io/shadow-id={env.id}",
+                )
+                for pod in pods.items:
+                    images.extend(self._extract_images_from_pod_spec(pod.spec if pod else None))
+        except ApiException as exc:
+            log.warning("shadow_image_resolution_failed", shadow_id=env.id, error=str(exc))
+
+        return sorted({image for image in images if image})
+
+    @staticmethod
+    def _extract_images_from_pod_spec(spec: client.V1PodSpec | None) -> list[str]:
+        if not spec:
+            return []
+        images = [container.image for container in spec.containers or [] if container.image]
+        images.extend(
+            container.image for container in spec.init_containers or [] if container.image
+        )
+        return images
 
     async def _wait_for_job(
         self,

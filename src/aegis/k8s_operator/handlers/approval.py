@@ -15,12 +15,13 @@ Workflow:
 
 import asyncio
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import Any, cast
 
 import kopf
 from kubernetes import client
 from kubernetes import config as k8s_config
 
+from aegis.config.settings import settings
 from aegis.crd import (
     AEGIS_API_GROUP,
     AEGIS_API_VERSION,
@@ -40,10 +41,10 @@ from aegis.observability._metrics import (
 log = get_logger(__name__)
 
 # Default approval timeout (15 minutes)
-DEFAULT_APPROVAL_TIMEOUT_MINUTES = 15
+DEFAULT_APPROVAL_TIMEOUT_MINUTES = settings.incident.approval_timeout_minutes
 
 # Post-fix monitoring duration (5 minutes)
-POST_FIX_MONITORING_SECONDS = 300
+POST_FIX_MONITORING_SECONDS = settings.incident.post_fix_monitoring_seconds
 
 # Track background tasks
 _approval_tasks: set[asyncio.Task[Any]] = set()
@@ -64,7 +65,7 @@ def _init_k8s_clients() -> tuple[client.CoreV1Api, client.CustomObjectsApi]:
 # ============================================================================
 
 
-@kopf.daemon(  # type: ignore[misc]
+@kopf.daemon(
     group=AEGIS_API_GROUP,
     version=AEGIS_API_VERSION,
     plural=AEGIS_INCIDENT_PLURAL,
@@ -72,8 +73,9 @@ def _init_k8s_clients() -> tuple[client.CoreV1Api, client.CustomObjectsApi]:
     value="AwaitingApproval",
 )
 async def approval_timeout_daemon(
-    name: str,
-    namespace: str,
+    *,
+    name: str | None,
+    namespace: str | None,
     body: kopf.Body,
     stopped: kopf.DaemonStopped,
     **_kwargs: Any,
@@ -91,6 +93,9 @@ async def approval_timeout_daemon(
         stopped: Daemon stop signal
         **_kwargs: Additional kopf kwargs
     """
+    if name is None or namespace is None:
+        return
+
     log.info(
         "approval_timeout_daemon_started",
         incident=name,
@@ -208,19 +213,21 @@ async def approval_timeout_daemon(
 # ============================================================================
 
 
-@kopf.on.field(  # type: ignore[misc]
+@kopf.on.field(
     group=AEGIS_API_GROUP,
     version=AEGIS_API_VERSION,
     plural=AEGIS_INCIDENT_PLURAL,
     field="spec.approval.status",
 )
 async def handle_approval_status_change(
-    old: str | None,
-    new: str | None,
-    name: str,
-    namespace: str,
+    *,
+    old: Any | None,
+    new: Any | None,
+    name: str | None,
+    namespace: str | None,
     body: kopf.Body,
     patch: kopf.Patch,
+    logger: Any,
     **_kwargs: Any,
 ) -> dict[str, Any] | None:
     """Handle changes to approval status.
@@ -240,14 +247,21 @@ async def handle_approval_status_change(
     Returns:
         Handler status dict or None
     """
+    _ = logger
+    if name is None or namespace is None:
+        return None
+
+    old_status = str(old) if old is not None else None
+    new_status = str(new) if new is not None else None
+
     log.info(
         "approval_status_changed",
         incident=name,
-        old_status=old,
-        new_status=new,
+        old_status=old_status,
+        new_status=new_status,
     )
 
-    if new == ApprovalStatus.APPROVED.value:
+    if new_status == ApprovalStatus.APPROVED.value:
         log.info(
             "incident_approved",
             incident=name,
@@ -255,7 +269,6 @@ async def handle_approval_status_change(
         )
 
         # Update phase to ApplyingFix
-        patch.status = patch.status or {}
         patch.status["phase"] = IncidentPhase.APPLYING_FIX.value
 
         # Trigger fix application in background
@@ -276,7 +289,7 @@ async def handle_approval_status_change(
             "approved_at": datetime.now(UTC).isoformat(),
         }
 
-    if new == ApprovalStatus.REJECTED.value:
+    if new_status == ApprovalStatus.REJECTED.value:
         log.info(
             "incident_rejected",
             incident=name,
@@ -325,7 +338,7 @@ async def _apply_approved_fix(
     fix_applier = get_fix_applier()
 
     # Parse incident
-    incident = AegisIncident.from_kubernetes_object(body)
+    incident = AegisIncident.from_kubernetes_object(cast(dict[str, Any], body))
 
     if not incident.spec.fix_proposal:
         log.error(
@@ -480,16 +493,18 @@ async def _update_fix_status(
 # ============================================================================
 
 
-@kopf.on.create(  # type: ignore[misc]
+@kopf.on.create(
     group=AEGIS_API_GROUP,
     version=AEGIS_API_VERSION,
     plural=AEGIS_INCIDENT_PLURAL,
 )
 async def handle_incident_creation(
-    name: str,
-    namespace: str,
+    *,
+    name: str | None,
+    namespace: str | None,
     body: kopf.Body,
     patch: kopf.Patch,
+    logger: Any,
     **_kwargs: Any,
 ) -> dict[str, Any]:
     """Handle new AegisIncident creation.
@@ -507,6 +522,10 @@ async def handle_incident_creation(
     Returns:
         Handler status dict
     """
+    _ = logger
+    if name is None or namespace is None:
+        return {"created": False}
+
     log.info(
         "incident_created",
         incident=name,
@@ -515,10 +534,8 @@ async def handle_incident_creation(
 
     # Initialize status if not present
     if "status" not in body or not body.get("status"):
-        patch.status = {
-            "phase": IncidentPhase.DETECTED.value,
-            "detectedAt": datetime.now(UTC).isoformat() + "Z",
-        }
+        patch.status["phase"] = IncidentPhase.DETECTED.value
+        patch.status["detectedAt"] = datetime.now(UTC).isoformat() + "Z"
 
     return {
         "created": True,
@@ -531,19 +548,21 @@ async def handle_incident_creation(
 # ============================================================================
 
 
-@kopf.on.field(  # type: ignore[misc]
+@kopf.on.field(
     group=AEGIS_API_GROUP,
     version=AEGIS_API_VERSION,
     plural=AEGIS_INCIDENT_PLURAL,
     field="spec.fixProposal",
 )
 async def handle_fix_proposal_added(
-    old: dict[str, Any] | None,
-    new: dict[str, Any] | None,
-    name: str,
-    namespace: str,
+    *,
+    old: Any | None,
+    new: Any | None,
+    name: str | None,
+    namespace: str | None,
     body: kopf.Body,
     patch: kopf.Patch,
+    logger: Any,
     **_kwargs: Any,
 ) -> dict[str, Any] | None:
     """Handle when a fix proposal is added to an incident.
@@ -563,7 +582,11 @@ async def handle_fix_proposal_added(
     Returns:
         Handler status dict or None
     """
-    if old is None and new is not None:
+    _ = logger
+    if name is None or namespace is None:
+        return None
+
+    if old is None and isinstance(new, dict):
         log.info(
             "fix_proposal_added",
             incident=name,
@@ -581,12 +604,10 @@ async def handle_fix_proposal_added(
             timeout_minutes = approval.get("timeoutMinutes", DEFAULT_APPROVAL_TIMEOUT_MINUTES)
             timeout_at = datetime.now(UTC) + timedelta(minutes=timeout_minutes)
 
-            patch.spec = patch.spec or {}
             patch.spec["approval"] = {
                 "status": ApprovalStatus.PENDING.value,
                 "timeoutAt": timeout_at.isoformat() + "Z",
             }
-            patch.status = patch.status or {}
             patch.status["phase"] = IncidentPhase.AWAITING_APPROVAL.value
 
             log.info(
@@ -606,13 +627,11 @@ async def handle_fix_proposal_added(
             reason="approval_not_required",
         )
 
-        patch.spec = patch.spec or {}
         patch.spec["approval"] = {
             "status": ApprovalStatus.APPROVED.value,
             "approvedBy": "aegis-operator",
             "approvedAt": datetime.now(UTC).isoformat() + "Z",
         }
-        patch.status = patch.status or {}
         patch.status["phase"] = IncidentPhase.APPLYING_FIX.value
 
         # Trigger fix application

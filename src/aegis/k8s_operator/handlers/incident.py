@@ -53,19 +53,20 @@ _background_tasks: set[asyncio.Task[Any]] = set()
 # ============================================================================
 
 
-@kopf.on.create("pods", annotations={"aegis.io/monitor": kopf.PRESENT})  # type: ignore[misc]
+@kopf.on.create("pods", annotations={"aegis.io/monitor": kopf.PRESENT})
 async def handle_pod_creation(
+    *,
     spec: Spec,
     meta: Meta,
     status: Status,
-    name: str,
-    namespace: str,
-    uid: str,
+    name: str | None,
+    namespace: str | None,
+    uid: str | None,
     labels: Labels,
     annotations: Annotations,
     body: Body,
     patch: Patch,
-    _logger: Logger,
+    logger: Logger,
     **_kwargs: Any,
 ) -> dict[str, Any] | None:
     """Handle new pod creation with AEGIS monitoring enabled.
@@ -96,7 +97,9 @@ async def handle_pod_creation(
         kopf.TemporaryError: For transient errors that should be retried
         kopf.PermanentError: For permanent errors that should not retry
     """
-    _ = (spec, meta, labels, annotations, body)  # Unused but required by kopf signature
+    _ = (logger, spec, meta, labels, annotations, body)  # Unused but required by kopf signature
+    if name is None or namespace is None or uid is None:
+        return None
 
     log.info(
         "🤖 AEGIS monitoring enabled for pod",
@@ -146,19 +149,20 @@ async def handle_pod_creation(
     }
 
 
-@kopf.on.field(  # type: ignore[misc]
+@kopf.on.field(
     "pods",
     field="status.phase",
     annotations={"aegis.io/monitor": kopf.PRESENT},
 )
 async def handle_pod_phase_change(
-    old: str | None,
-    new: str | None,
-    name: str,
-    namespace: str,
+    *,
+    old: Any | None,
+    new: Any | None,
+    name: str | None,
+    namespace: str | None,
     status: Status,
     patch: Patch,
-    _logger: Logger,
+    logger: Logger,
     **_kwargs: Any,
 ) -> dict[str, Any] | None:
     """Handle pod phase transitions and detect incidents.
@@ -185,22 +189,29 @@ async def handle_pod_phase_change(
     Returns:
         dict: Analysis results to store in pod status
     """
+    _ = (logger, patch)
+    if name is None or namespace is None:
+        return None
+
+    old_phase = str(old) if old is not None else None
+    new_phase = str(new) if new is not None else None
+
     log.info(
         "📊 Pod phase transition detected",
         pod=name,
-        old_phase=old,
-        new_phase=new,
+        old_phase=old_phase,
+        new_phase=new_phase,
     )
 
     # Check for unhealthy phases
     unhealthy_phases = ["Failed", "Unknown"]
 
-    if new in unhealthy_phases:
+    if new_phase in unhealthy_phases:
         log.error(
             "❌ Unhealthy pod phase detected",
             pod=name,
-            phase=new,
-            previous=old,
+            phase=new_phase,
+            previous=old_phase,
         )
 
         # Record incident detection
@@ -215,7 +226,7 @@ async def handle_pod_phase_change(
             _analyze_pod_incident(
                 resource_name=name,
                 namespace=namespace,
-                phase=new or "Unknown",
+                phase=new_phase or "Unknown",
             ),
             name=f"analyze_pod_phase_{namespace}_{name}",
         )
@@ -224,11 +235,11 @@ async def handle_pod_phase_change(
 
         # Update patch with incident marker
         patch.metadata.annotations["aegis.io/incident-detected"] = datetime.now(UTC).isoformat()
-        patch.metadata.annotations["aegis.io/incident-phase"] = new or "Unknown"
+        patch.metadata.annotations["aegis.io/incident-phase"] = new_phase or "Unknown"
 
         return {
             "incident-detected": True,
-            "incident-phase": new,
+            "incident-phase": new_phase,
             "detection-time": datetime.now(UTC).isoformat(),
         }
 
@@ -280,14 +291,16 @@ async def handle_pod_phase_change(
 # ============================================================================
 
 
-@kopf.on.create("deployments", annotations={"aegis.io/monitor": kopf.PRESENT})  # type: ignore[misc]
+@kopf.on.create("deployments", annotations={"aegis.io/monitor": kopf.PRESENT})
 async def handle_deployment_creation(
+    *,
     spec: Spec,
     meta: Meta,
     status: Status,
-    name: str,
-    namespace: str,
+    name: str | None,
+    namespace: str | None,
     patch: Patch,
+    logger: Logger,
     **_kwargs: Any,
 ) -> dict[str, Any]:
     """Handle new deployment creation with AEGIS monitoring.
@@ -308,7 +321,9 @@ async def handle_deployment_creation(
     Returns:
         dict: Status information for deployment
     """
-    _ = (meta, status)  # Unused but required by kopf signature
+    _ = (logger, meta, status)  # Unused but required by kopf signature
+    if name is None or namespace is None:
+        return {}
 
     log.info(
         "🚀 AEGIS monitoring enabled for deployment",
@@ -329,19 +344,20 @@ async def handle_deployment_creation(
     }
 
 
-@kopf.on.field(  # type: ignore[misc]
+@kopf.on.field(
     "deployments",
     field="status.unavailableReplicas",
     annotations={"aegis.io/monitor": kopf.PRESENT},
 )
 async def handle_deployment_unavailable_replicas(
-    old: int | None,
-    new: int | None,
-    name: str,
-    namespace: str,
+    *,
+    old: Any | None,
+    new: Any | None,
+    name: str | None,
+    namespace: str | None,
     status: Status,
     patch: Patch,
-    _logger: Logger,
+    logger: Logger,
     **_kwargs: Any,
 ) -> dict[str, Any] | None:
     """Handle changes in unavailable replicas count.
@@ -362,15 +378,21 @@ async def handle_deployment_unavailable_replicas(
     Returns:
         dict: Analysis metadata if incident detected
     """
-    if new and new > 0:
+    _ = logger
+    if name is None or namespace is None or not isinstance(new, int) or new <= 0:
+        return None
+
+    previous = old if isinstance(old, int) else None
+
+    if new > 0:
         log.warning(
             "⚠️ Deployment has unavailable replicas",
             deployment=name,
             unavailable=new,
-            previous=old,
+            previous=previous,
         )
 
-        desired_replicas = status.get("replicas", 0)
+        desired_replicas = int(status.get("replicas", 0) or 0)
 
         # If more than 50% unavailable, trigger incident analysis
         if (

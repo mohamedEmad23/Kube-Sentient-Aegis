@@ -122,11 +122,11 @@ Update your `.env` file:
 
 ```bash
 # .env
-AEGIS_AGENT_RCA_MODEL=phi3:mini
-AEGIS_AGENT_SOLUTION_MODEL=tinyllama:latest
-AEGIS_AGENT_VERIFIER_MODEL=phi3:mini
-AEGIS_OLLAMA_BASE_URL=http://localhost:11434
-AEGIS_OLLAMA_ENABLED=true
+AGENT_RCA_MODEL=phi3:mini
+AGENT_SOLUTION_MODEL=tinyllama:latest
+AGENT_VERIFIER_MODEL=phi3:mini
+OLLAMA_BASE_URL=http://localhost:11434
+OLLAMA_ENABLED=true
 ```
 
 ---
@@ -163,8 +163,8 @@ TOGETHER_API_KEY=your_key_here
 **Configuration in `.env`:**
 ```bash
 # Use cloud API instead of local Ollama
-AEGIS_OLLAMA_ENABLED=false
-AEGIS_AGENT_BACKEND=groq  # or gemini, together
+OLLAMA_ENABLED=false
+# Cloud backends are not wired in code yet; Ollama is the supported backend.
 ```
 
 ---
@@ -271,7 +271,7 @@ Always prefer `-q4_K_M` or `-q5_K_M` quantized versions:
 
 In `.env`:
 ```bash
-AEGIS_OLLAMA_CONTEXT_LENGTH=2048  # Lower = faster
+OLLAMA_NUM_CTX=2048  # Lower = faster
 ```
 
 ### 3. Use Cloud APIs for Heavy Tasks
@@ -279,9 +279,9 @@ AEGIS_OLLAMA_CONTEXT_LENGTH=2048  # Lower = faster
 For complex reasoning, use Groq/Gemini:
 ```bash
 # Hybrid approach
-AEGIS_AGENT_RCA_MODEL=phi3:mini          # Local (fast)
-AEGIS_AGENT_SOLUTION_MODEL=groq          # Cloud (better quality)
-AEGIS_AGENT_VERIFIER_MODEL=phi3:mini     # Local (fast)
+AGENT_RCA_MODEL=phi3:mini          # Local (fast)
+AGENT_SOLUTION_MODEL=tinyllama:latest  # Local (balanced)
+AGENT_VERIFIER_MODEL=phi3:mini     # Local (fast)
 ```
 
 ---

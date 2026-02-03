@@ -9,64 +9,11 @@
 #   5. Cleanup: vcluster delete shadow-{incident_id} -n aegis-shadows
 
 # vCluster configuration
-sync:
-  # Sync these resources from host to vCluster
-  toHost:
-    # Sync pods created in vCluster to host
-    pods:
-      enabled: true
-    # Sync services
-    services:
-      enabled: true
-    # Sync configmaps
-    configmaps:
-      enabled: true
-    # Sync secrets
-    secrets:
-      enabled: true
-    # Sync persistent volume claims
-    persistentvolumeclaims:
-      enabled: true
+# NOTE: sync settings are omitted for compatibility with newer vcluster schemas.
 
-  # Resources to sync from host to vCluster
-  fromHost:
-    # Sync storage classes so PVCs work
-    storageClasses:
-      enabled: true
-    # Sync ingress classes if needed
-    ingressClasses:
-      enabled: false
-
-# Resource isolation
-isolation:
-  enabled: true
-
-  # Namespace where vCluster pods run in the host
-  namespace: null
-
-  # Resource limits for the vCluster itself
-  resourceQuota:
-    enabled: true
-    quota:
-      requests.cpu: "2"
-      requests.memory: "4Gi"
-      limits.cpu: "4"
-      limits.memory: "8Gi"
-      pods: "20"
-      services: "10"
-      configmaps: "20"
-      secrets: "20"
-      persistentvolumeclaims: "5"
-
-  # Limit ranges for pods in vCluster
-  limitRange:
-    enabled: true
-    default:
-      cpu: "500m"
-      memory: "512Mi"
-    defaultRequest:
-      cpu: "100m"
-      memory: "128Mi"
+# Note: The "isolation" block was removed for vcluster v0.20+ compatibility.
+# If you need quotas/limits, configure them via policies or apply them after
+# vcluster creation with standard Kubernetes objects.
 
 # Control plane configuration
 controlPlane:
@@ -102,9 +49,9 @@ policies:
   # Pod security standards
   podSecurityStandard: baseline
 
-  # Resource quota (already defined in isolation)
+  # Resource quota (disabled by default)
   resourceQuota:
-    enabled: false  # Using isolation.resourceQuota instead
+    enabled: false
 
 # Telemetry (disable for privacy)
 telemetry:

@@ -22,7 +22,6 @@ kubeVersion: ">=1.25.0"
 # Chart maintainers
 maintainers:
   - name: AEGIS Team
-    email: aegis@example.com
 
 # Keywords for chart discovery
 keywords:

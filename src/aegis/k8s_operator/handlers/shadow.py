@@ -10,11 +10,15 @@ This module provides:
 - Integration with VClusterManager (when implemented)
 """
 
+import json
 from datetime import UTC, datetime
+from http import HTTPStatus
 from typing import Any
 
 import kopf
 from kopf import DaemonStopped, Index, Logger, Patch, Spec, Status
+from kubernetes import client
+from kubernetes import config as k8s_config
 
 from aegis.config.settings import settings
 from aegis.observability._logging import get_logger
@@ -32,18 +36,203 @@ log = get_logger(__name__)
 # Constants for magic values
 HIGH_LOAD_THRESHOLD = 0.8
 LOW_LOAD_THRESHOLD = 0.3
-BUSINESS_HOURS_START = 9
-BUSINESS_HOURS_END = 17
-HIGH_LOAD_PREDICTION = 0.85
-LOW_LOAD_PREDICTION = 0.25
-SHADOW_ENV_CREATION_SECONDS = 5
 SHADOW_HEALTH_CHECK_INTERVAL = 10
 
 
-# In-memory storage for AI proposals
-# TODO: Replace with Redis or etcd for multi-instance operators
-_ai_proposals: dict[str, dict[str, Any]] = {}
-_shadow_results: dict[str, dict[str, Any]] = {}
+# Persistent storage for AI proposals/results
+PROPOSALS_CONFIGMAP = "aegis-shadow-proposals"
+RESULTS_CONFIGMAP = "aegis-shadow-results"
+CONFIGMAP_DATA_KEY = "data.json"
+
+_core_api: client.CoreV1Api | None = None
+_custom_api: client.CustomObjectsApi | None = None
+
+
+def _get_core_api() -> client.CoreV1Api:
+    """Get or initialize CoreV1 API client."""
+    global _core_api  # noqa: PLW0603
+    if _core_api is not None:
+        return _core_api
+    try:
+        k8s_config.load_incluster_config()
+    except k8s_config.ConfigException:
+        k8s_config.load_kube_config()
+    _core_api = client.CoreV1Api()
+    return _core_api
+
+
+def _get_custom_api() -> client.CustomObjectsApi:
+    """Get or initialize CustomObjects API client."""
+    global _custom_api  # noqa: PLW0603
+    if _custom_api is not None:
+        return _custom_api
+    _get_core_api()  # Ensures config is loaded
+    _custom_api = client.CustomObjectsApi()
+    return _custom_api
+
+
+def _operator_namespace() -> str:
+    return settings.kubernetes.namespace or "aegis-system"
+
+
+def _load_map(name: str) -> dict[str, dict[str, Any]]:
+    """Load a JSON map from a ConfigMap."""
+    api = _get_core_api()
+    namespace = _operator_namespace()
+    try:
+        cm = api.read_namespaced_config_map(name, namespace)
+    except client.ApiException as exc:
+        if exc.status == HTTPStatus.NOT_FOUND:
+            cm = client.V1ConfigMap(
+                metadata=client.V1ObjectMeta(name=name, namespace=namespace),
+                data={CONFIGMAP_DATA_KEY: "{}"},
+            )
+            try:
+                api.create_namespaced_config_map(namespace, cm)
+            except client.ApiException as create_exc:
+                log.warning("shadow_configmap_create_failed", name=name, error=create_exc.reason)
+                return {}
+            return {}
+        log.warning("shadow_configmap_read_failed", name=name, error=exc.reason)
+        return {}
+
+    raw = (cm.data or {}).get(CONFIGMAP_DATA_KEY, "{}")
+    try:
+        parsed = json.loads(raw) if raw else {}
+    except json.JSONDecodeError:
+        log.warning("shadow_configmap_parse_failed", name=name)
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _save_map(name: str, data: dict[str, dict[str, Any]]) -> None:
+    """Persist a JSON map to a ConfigMap."""
+    api = _get_core_api()
+    namespace = _operator_namespace()
+    body = {"data": {CONFIGMAP_DATA_KEY: json.dumps(data)}}
+    try:
+        api.patch_namespaced_config_map(name, namespace, body)
+    except client.ApiException as exc:
+        if exc.status == HTTPStatus.NOT_FOUND:
+            cm = client.V1ConfigMap(
+                metadata=client.V1ObjectMeta(name=name, namespace=namespace),
+                data={CONFIGMAP_DATA_KEY: json.dumps(data)},
+            )
+            try:
+                api.create_namespaced_config_map(namespace, cm)
+            except client.ApiException as create_exc:
+                log.warning("shadow_configmap_create_failed", name=name, error=create_exc.reason)
+        else:
+            log.warning("shadow_configmap_write_failed", name=name, error=exc.reason)
+
+
+def _get_ai_proposal(key: str) -> dict[str, Any] | None:
+    proposals = _load_map(PROPOSALS_CONFIGMAP)
+    value = proposals.get(key)
+    return value if isinstance(value, dict) else None
+
+
+def _set_ai_proposal(key: str, proposal: dict[str, Any]) -> None:
+    proposals = _load_map(PROPOSALS_CONFIGMAP)
+    proposals[key] = proposal
+    _save_map(PROPOSALS_CONFIGMAP, proposals)
+
+
+def _pop_ai_proposal(key: str) -> dict[str, Any] | None:
+    proposals = _load_map(PROPOSALS_CONFIGMAP)
+    value = proposals.pop(key, None)
+    _save_map(PROPOSALS_CONFIGMAP, proposals)
+    return value if isinstance(value, dict) else None
+
+
+def _set_shadow_result(key: str, result: dict[str, Any]) -> None:
+    results = _load_map(RESULTS_CONFIGMAP)
+    results[key] = result
+    _save_map(RESULTS_CONFIGMAP, results)
+
+
+def _parse_quantity(value: str | None) -> float:
+    """Parse Kubernetes resource quantity into a float (base units)."""
+    if not value:
+        return 0.0
+    try:
+        from kubernetes.utils.quantity import parse_quantity
+    except ImportError:
+        parse_quantity = None
+    if parse_quantity:
+        try:
+            return float(parse_quantity(value))
+        except (TypeError, ValueError):
+            return 0.0
+
+    # Fallback parser (best-effort)
+    suffixes = {
+        "n": 1e-9,
+        "u": 1e-6,
+        "m": 1e-3,
+        "": 1.0,
+        "Ki": 1024.0,
+        "Mi": 1024.0**2,
+        "Gi": 1024.0**3,
+        "Ti": 1024.0**4,
+        "Pi": 1024.0**5,
+        "Ei": 1024.0**6,
+        "K": 1000.0,
+        "M": 1000.0**2,
+        "G": 1000.0**3,
+        "T": 1000.0**4,
+        "P": 1000.0**5,
+        "E": 1000.0**6,
+    }
+    for suffix, multiplier in suffixes.items():
+        if value.endswith(suffix) and suffix:
+            number = value[: -len(suffix)]
+            try:
+                return float(number) * multiplier
+            except ValueError:
+                return 0.0
+    try:
+        return float(value)
+    except ValueError:
+        return 0.0
+
+
+def _sum_resource_requests(spec: Spec) -> tuple[float, float]:
+    """Sum CPU and memory requests for deployment containers."""
+    cpu_total = 0.0
+    mem_total = 0.0
+    containers = (
+        spec.get("template", {}).get("spec", {}).get("containers", [])
+        if isinstance(spec, dict)
+        else []
+    )
+    for container in containers:
+        resources = container.get("resources", {})
+        resource_requests = resources.get("requests", {}) or {}
+        limits = resources.get("limits", {}) or {}
+        cpu_total += _parse_quantity(resource_requests.get("cpu") or limits.get("cpu"))
+        mem_total += _parse_quantity(resource_requests.get("memory") or limits.get("memory"))
+    return cpu_total, mem_total
+
+
+def _fetch_pod_usage(namespace: str, label_selector: str) -> tuple[float, float]:
+    """Fetch total CPU/memory usage for pods matching selector."""
+    api = _get_custom_api()
+    metrics = api.list_namespaced_custom_object(
+        group="metrics.k8s.io",
+        version="v1beta1",
+        namespace=namespace,
+        plural="pods",
+        label_selector=label_selector,
+    )
+    cpu_total = 0.0
+    mem_total = 0.0
+    for item in metrics.get("items", []):
+        for container in item.get("containers", []):
+            usage = container.get("usage", {})
+            cpu_total += _parse_quantity(usage.get("cpu"))
+            mem_total += _parse_quantity(usage.get("memory"))
+    return cpu_total, mem_total
 
 
 # ============================================================================
@@ -51,15 +240,16 @@ _shadow_results: dict[str, dict[str, Any]] = {}
 # ============================================================================
 
 
-@kopf.daemon(  # type: ignore[misc]
+@kopf.daemon(
     "deployments",
     annotations={"aegis.io/shadow-testing": "enabled"},
 )
 async def shadow_verification_daemon(
+    *,
     spec: Spec,
-    name: str,
-    namespace: str,
-    _logger: Logger,
+    name: str | None,
+    namespace: str | None,
+    logger: Logger,
     stopped: DaemonStopped,
     patch: Patch,
     **_kwargs: Any,
@@ -92,13 +282,23 @@ async def shadow_verification_daemon(
         - Uses `stopped` signal for graceful shutdown
         - Automatically retries on temporary errors
     """
-    _ = spec  # Unused but required by kopf signature
+    _ = (logger, spec)  # Unused but required by kopf signature
+    if not name or not namespace:
+        return
 
     log.info(
         "🔬 Shadow verification daemon started",
         deployment=name,
         namespace=namespace,
     )
+
+    if not settings.shadow.enabled:
+        log.info(
+            "shadow_verification_disabled",
+            deployment=name,
+            namespace=namespace,
+        )
+        return
 
     # Update metrics
     shadow_environments_active.labels(runtime=settings.shadow.runtime.value).inc()
@@ -113,9 +313,8 @@ async def shadow_verification_daemon(
             proposal_key = f"{namespace}/{name}"
 
             # Check if there are pending AI proposals
-            if proposal_key in _ai_proposals:
-                proposal = _ai_proposals[proposal_key]
-
+            proposal = _get_ai_proposal(proposal_key)
+            if proposal:
                 log.info(
                     "🧪 AI proposal detected for shadow testing",
                     deployment=name,
@@ -147,11 +346,14 @@ async def shadow_verification_daemon(
                     )
 
                     # Store success result
-                    _shadow_results[proposal_key] = {
-                        "status": "passed",
-                        "timestamp": datetime.now(UTC).isoformat(),
-                        "proposal": proposal,
-                    }
+                    _set_shadow_result(
+                        proposal_key,
+                        {
+                            "status": "passed",
+                            "timestamp": datetime.now(UTC).isoformat(),
+                            "proposal": proposal,
+                        },
+                    )
 
                     # Update deployment annotation with approval
                     patch.metadata.annotations["aegis.io/last-shadow-test"] = "passed"
@@ -171,16 +373,19 @@ async def shadow_verification_daemon(
                         proposal=proposal.get("action"),
                     )
 
-                    _shadow_results[proposal_key] = {
-                        "status": "failed",
-                        "timestamp": datetime.now(UTC).isoformat(),
-                        "proposal": proposal,
-                    }
+                    _set_shadow_result(
+                        proposal_key,
+                        {
+                            "status": "failed",
+                            "timestamp": datetime.now(UTC).isoformat(),
+                            "proposal": proposal,
+                        },
+                    )
 
                     patch.metadata.annotations["aegis.io/last-shadow-test"] = "failed"
 
                 # Remove processed proposal
-                del _ai_proposals[proposal_key]
+                _pop_ai_proposal(proposal_key)
 
             # Wait before next check (configurable interval)
             # Use stopped.wait() instead of asyncio.sleep() for graceful shutdown
@@ -203,18 +408,21 @@ async def shadow_verification_daemon(
 # ============================================================================
 
 
-@kopf.timer(  # type: ignore[misc]
+@kopf.timer(
     "deployments",
     interval=60.0,  # Check every 60 seconds
     annotations={"aegis.io/monitor": kopf.PRESENT},
 )
 async def periodic_health_check_timer(
+    *,
     spec: Spec,
-    name: str,
-    namespace: str,
+    name: str | None,
+    namespace: str | None,
     status: Status,
-    _logger: Logger,
-    pod_health_index: Index,  # Injected from index.py
+    logger: Logger,
+    pod_health_index: Index[tuple[str, str], dict[str, Any]]
+    | None = None,  # Injected from index.py
+    pod_by_label_index: Index[tuple[str, str, str], str] | None = None,  # Injected from index.py
     **_kwargs: Any,
 ) -> None:
     """Periodically check deployment health and trigger AI analysis.
@@ -232,6 +440,10 @@ async def periodic_health_check_timer(
         pod_health_index: Injected index of pod health (from index.py)
         **kwargs: Additional kopf kwargs
     """
+    _ = logger
+    if not name or not namespace or not pod_health_index or not pod_by_label_index:
+        return
+
     log.debug(
         "🔍 Running periodic health check",
         deployment=name,
@@ -245,18 +457,21 @@ async def periodic_health_check_timer(
         log.warning("deployment_no_selector", deployment=name)
         return
 
-    # Find pods matching deployment selector using the index
+    # Find pods matching deployment selector using the label index
+    matching_pods: set[str] | None = None
+    for label_key, label_value in selector.items():
+        names = set(pod_by_label_index.get((namespace, label_key, label_value), ()))
+        matching_pods = names if matching_pods is None else matching_pods & names
+
+    if not matching_pods:
+        return
+
     unhealthy_pods: list[str] = []
-
-    for (pod_ns, pod_name), health_data_list in pod_health_index.items():
-        if pod_ns != namespace:
+    for (pod_ns, pod_name), health_store in pod_health_index.items():
+        if pod_ns != namespace or pod_name not in matching_pods:
             continue
-
-        # Check if pod matches selector (simplified - real impl needs label matching)
-        # For now, check if pods are in same namespace
-        unhealthy_pods.extend(
-            pod_name for health_data in health_data_list if not health_data.get("healthy", True)
-        )
+        if any(not entry.get("healthy", True) for entry in health_store):
+            unhealthy_pods.append(pod_name)
 
     # Check replica health
     ready_replicas = status.get("readyReplicas", 0)
@@ -284,17 +499,18 @@ async def periodic_health_check_timer(
 # ============================================================================
 
 
-@kopf.timer(  # type: ignore[misc]
+@kopf.timer(
     "deployments",
     interval=120.0,  # Check every 2 minutes
     annotations={"aegis.io/ai-scaling": "enabled"},
 )
 async def ai_driven_scaling_timer(
+    *,
     spec: Spec,
-    name: str,
-    namespace: str,
+    name: str | None,
+    namespace: str | None,
     patch: Patch,
-    _logger: Logger,
+    logger: Logger,
     **_kwargs: Any,
 ) -> None:
     """AI-driven predictive scaling based on load patterns.
@@ -310,7 +526,11 @@ async def ai_driven_scaling_timer(
         logger: Kopf logger
         **_kwargs: Additional kopf kwargs
     """
-    _ = patch  # Unused but available for scaling implementation
+    _ = (logger, patch)  # Unused but available for scaling implementation
+    if not name or not namespace:
+        return
+    if not settings.shadow.enabled:
+        return
 
     current_replicas = spec.get("replicas", 1)
 
@@ -320,9 +540,19 @@ async def ai_driven_scaling_timer(
         current_replicas=int(current_replicas),
     )
 
-    # TODO: Integrate with real AI model for load prediction
-    # For now, use a simple heuristic based on time
-    predicted_load = _predict_load(name, namespace)
+    selector = spec.get("selector", {}).get("matchLabels", {})
+    if not selector:
+        log.warning("ai_scaling_missing_selector", deployment=name)
+        return
+
+    predicted_load = _predict_load(name, namespace, selector, spec)
+    if predicted_load is None:
+        log.info(
+            "ai_scaling_metrics_unavailable",
+            deployment=name,
+            namespace=namespace,
+        )
+        return
 
     log.info(
         "🔮 AI load prediction",
@@ -343,13 +573,16 @@ async def ai_driven_scaling_timer(
             )
 
             # Create AI proposal for shadow testing
-            _ai_proposals[f"{namespace}/{name}"] = {
-                "action": "scale_up",
-                "changes": {"replicas": new_replicas},
-                "reason": f"High predicted load: {predicted_load:.2f}",
-                "confidence": 0.85,
-                "timestamp": datetime.now(UTC).isoformat(),
-            }
+            _set_ai_proposal(
+                f"{namespace}/{name}",
+                {
+                    "action": "scale_up",
+                    "changes": {"replicas": new_replicas},
+                    "reason": f"High predicted load: {predicted_load:.2f}",
+                    "confidence": 0.85,
+                    "timestamp": datetime.now(UTC).isoformat(),
+                },
+            )
 
     elif predicted_load < LOW_LOAD_THRESHOLD:  # Low load predicted
         new_replicas = max(current_replicas - 1, 1)  # Min 1 replica
@@ -362,13 +595,16 @@ async def ai_driven_scaling_timer(
                 predicted_load=predicted_load,
             )
 
-            _ai_proposals[f"{namespace}/{name}"] = {
-                "action": "scale_down",
-                "changes": {"replicas": new_replicas},
-                "reason": f"Low predicted load: {predicted_load:.2f}",
-                "confidence": 0.80,
-                "timestamp": datetime.now(UTC).isoformat(),
-            }
+            _set_ai_proposal(
+                f"{namespace}/{name}",
+                {
+                    "action": "scale_down",
+                    "changes": {"replicas": new_replicas},
+                    "reason": f"Low predicted load: {predicted_load:.2f}",
+                    "confidence": 0.80,
+                    "timestamp": datetime.now(UTC).isoformat(),
+                },
+            )
 
 
 # ============================================================================
@@ -445,24 +681,40 @@ async def _run_shadow_verification(
         return passed
 
 
-def _predict_load(_deployment_name: str, _namespace: str) -> float:
-    """Internal: Predict future load for a deployment.
+def _predict_load(
+    deployment_name: str,
+    namespace: str,
+    selector: dict[str, str],
+    spec: Spec,
+) -> float | None:
+    """Predict load using live metrics and resource requests."""
+    if not selector:
+        return None
 
-    This is a mock implementation. Replace with real ML model.
+    label_selector = ",".join(f"{key}={value}" for key, value in selector.items())
+    try:
+        usage_cpu, usage_mem = _fetch_pod_usage(namespace, label_selector)
+    except client.ApiException as exc:
+        log.warning(
+            "shadow_metrics_query_failed",
+            deployment=deployment_name,
+            namespace=namespace,
+            error=exc.reason,
+        )
+        return None
 
-    Args:
-        _deployment_name: Deployment name (unused in heuristic)
-        _namespace: Namespace (unused in heuristic)
+    req_cpu, req_mem = _sum_resource_requests(spec)
+    ratios: list[float] = []
+    if req_cpu > 0:
+        ratios.append(usage_cpu / req_cpu)
+    if req_mem > 0:
+        ratios.append(usage_mem / req_mem)
+    if not ratios:
+        log.warning(
+            "shadow_metrics_missing_requests",
+            deployment=deployment_name,
+            namespace=namespace,
+        )
+        return None
 
-    Returns:
-        float: Predicted load (0.0 to 1.0)
-    """
-    # Simple heuristic based on time of day
-    current_hour = datetime.now(UTC).hour
-
-    # Business hours (9am-5pm UTC): high load
-    if BUSINESS_HOURS_START <= current_hour <= BUSINESS_HOURS_END:
-        return HIGH_LOAD_PREDICTION  # High load
-
-    # Off hours: low load
-    return LOW_LOAD_PREDICTION  # Low load
+    return max(ratios)

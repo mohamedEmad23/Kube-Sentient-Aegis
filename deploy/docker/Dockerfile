@@ -54,7 +54,29 @@ RUN groupadd --gid 1000 aegis && \
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     curl \
+    bash \
     && rm -rf /var/lib/apt/lists/*
+
+# Set shell with pipefail for safer pipe operations (required before RUN with pipes)
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+
+# Install kubectl and vcluster CLI for shadow management
+ARG TARGETOS=linux
+ARG TARGETARCH=amd64
+RUN curl -L -o /usr/local/bin/kubectl \
+      "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/${TARGETOS}/${TARGETARCH}/kubectl" \
+    && chmod +x /usr/local/bin/kubectl \
+    && curl -L -o /usr/local/bin/vcluster \
+      "https://github.com/loft-sh/vcluster/releases/latest/download/vcluster-${TARGETOS}-${TARGETARCH}" \
+    && chmod +x /usr/local/bin/vcluster \
+    && curl -s https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash \
+    && K8SGPT_VERSION=$(curl -s https://api.github.com/repos/k8sgpt-ai/k8sgpt/releases/latest | grep '"tag_name"' | sed -E 's/.*"([^"]+)".*/\1/') \
+    && curl -L -o /tmp/k8sgpt.tar.gz \
+      "https://github.com/k8sgpt-ai/k8sgpt/releases/download/${K8SGPT_VERSION}/k8sgpt_Linux_${TARGETARCH}.tar.gz" \
+    && tar -xzf /tmp/k8sgpt.tar.gz -C /tmp \
+    && mv /tmp/k8sgpt /usr/local/bin/k8sgpt \
+    && chmod +x /usr/local/bin/k8sgpt \
+    && rm -f /tmp/k8sgpt.tar.gz
 
 # Set working directory
 WORKDIR /app

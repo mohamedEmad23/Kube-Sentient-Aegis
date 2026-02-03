@@ -15,11 +15,16 @@ services:
     ports:
       - "8080:8080" # Metrics
     environment:
-      - AEGIS_ENVIRONMENT=development
-      - AEGIS_SHADOW_MODE_ENABLED=true
-      - AEGIS_OBSERVABILITY_LOG_FORMAT=console
-      - AEGIS_OBSERVABILITY_LOG_LEVEL=DEBUG
-      - AEGIS_K8S_IN_CLUSTER=false
+      - ENVIRONMENT=development
+      - DEBUG=true
+      - SHADOW_ENABLED=true
+      - SHADOW_RUNTIME=vcluster
+      - OBS_LOG_FORMAT=text
+      - OBS_LOG_LEVEL=DEBUG
+      - OBS_LOKI_ENABLED=true
+      - OBS_LOKI_URL=http://loki:3100
+      - K8S_IN_CLUSTER=false
+      - K8S_KUBECONFIG_PATH=/home/aegis/.kube/config
       - KUBECONFIG=/home/aegis/.kube/config
       - OLLAMA_BASE_URL=http://host.docker.internal:11434
       - HOME=/home/aegis
@@ -69,8 +74,8 @@ services:
     ports:
       - "3000:3000"
     environment:
-      - GF_SECURITY_ADMIN_USER=admin
-      - GF_SECURITY_ADMIN_PASSWORD=aegis123
+      - GF_SECURITY_ADMIN_USER=${GRAFANA_ADMIN_USER:-admin}
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD}
       - GF_USERS_ALLOW_SIGN_UP=false
     volumes:
       - grafana-data:/var/lib/grafana

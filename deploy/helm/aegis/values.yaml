@@ -111,6 +111,10 @@ config:
   shadow:
     # Enable shadow environment verification
     enabled: true
+    # Shadow runtime (vcluster recommended)
+    runtime: vcluster
+    # Namespace prefix for host shadow namespaces
+    namespacePrefix: aegis-shadow-
     # Maximum concurrent shadow environments
     maxConcurrent: 3
     # Default verification timeout (seconds)
@@ -146,6 +150,10 @@ config:
     metricsPort: 8080
     # Enable OpenTelemetry tracing
     tracingEnabled: false
+    # Enable Loki log aggregation for RCA context
+    lokiEnabled: false
+    # Loki base URL (e.g., http://loki:3100)
+    lokiUrl: ""
 
 # ============================================================================
 # LLM / Ollama Configuration
@@ -208,6 +216,8 @@ gpu:
   # Enable GPU support for LLM inference
   # Auto-detected via node labels: nvidia.com/gpu or amd.com/gpu
   enabled: false
+  # Compute mode: auto, gpu, cpu
+  computeMode: auto
 
   # GPU resource requests (only if gpu.enabled is true)
   resources: {}

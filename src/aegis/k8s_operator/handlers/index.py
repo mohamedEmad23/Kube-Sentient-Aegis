@@ -32,10 +32,11 @@ HIGH_RESTARTS_WARNING_THRESHOLD = 10
 # ============================================================================
 
 
-@kopf.index("pods")  # type: ignore[misc]
+@kopf.index("pods")
 def pod_health_index(
-    namespace: str,
-    name: str,
+    *,
+    namespace: str | None,
+    name: str | None,
     status: Status,
     **_kwargs: Any,
 ) -> dict[tuple[str, str], dict[str, Any]]:
@@ -71,6 +72,9 @@ def pod_health_index(
         ...         if not health['healthy']:
         ...             print(f"Unhealthy pod: {ns}/{pod_name}")
     """
+    if not namespace or not name:
+        return {}
+
     # Extract phase
     phase = status.get("phase", "Unknown")
 
@@ -111,11 +115,12 @@ def pod_health_index(
     return {(namespace, name): health_data}
 
 
-@kopf.index("pods")  # type: ignore[misc]
+@kopf.index("pods")
 def pod_by_label_index(
-    labels: Labels,
-    name: str,
-    namespace: str,
+    *,
+    labels: Labels | None,
+    name: str | None,
+    namespace: str | None,
     **_kwargs: Any,
 ) -> dict[tuple[str, str, str], str]:
     """Index pods by their labels for fast label-based lookups.
@@ -143,6 +148,9 @@ def pod_by_label_index(
         ...     if ns == "production" and label_key == "app" and label_value == "nginx":
         ...         print(f"Found: {pod_names}")
     """
+    if not labels or not name or not namespace:
+        return {}
+
     result = {}
     for label_key, label_value in labels.items():
         # Create index entry for each label
@@ -156,10 +164,11 @@ def pod_by_label_index(
 # ============================================================================
 
 
-@kopf.index("deployments")  # type: ignore[misc]
+@kopf.index("deployments")
 def deployment_replica_index(
-    namespace: str,
-    name: str,
+    *,
+    namespace: str | None,
+    name: str | None,
     spec: Spec,
     status: Status,
     **_kwargs: Any,
@@ -190,6 +199,9 @@ def deployment_replica_index(
     Returns:
         dict: Mapping of (namespace, name) to replica metrics
     """
+    if not namespace or not name:
+        return {}
+
     desired = spec.get("replicas", 1)
     ready = status.get("readyReplicas", 0)
     available = status.get("availableReplicas", 0)
@@ -229,10 +241,11 @@ def deployment_replica_index(
 # ============================================================================
 
 
-@kopf.index("services")  # type: ignore[misc]
+@kopf.index("services")
 def service_endpoint_index(
-    namespace: str,
-    name: str,
+    *,
+    namespace: str | None,
+    name: str | None,
     spec: Spec,
     **_kwargs: Any,
 ) -> dict[tuple[str, str], dict[str, Any]]:
@@ -259,6 +272,9 @@ def service_endpoint_index(
     Returns:
         dict: Mapping of (namespace, name) to service info
     """
+    if not namespace or not name:
+        return {}
+
     selector = spec.get("selector", {})
     service_type = spec.get("type", "ClusterIP")
     ports = spec.get("ports", [])
@@ -285,9 +301,10 @@ def service_endpoint_index(
 # ============================================================================
 
 
-@kopf.index("nodes")  # type: ignore[misc]
+@kopf.index("nodes")
 def node_resource_index(
-    name: str,
+    *,
+    name: str | None,
     status: Status,
     **_kwargs: Any,
 ) -> dict[str, dict[str, Any]]:
@@ -313,6 +330,9 @@ def node_resource_index(
     Returns:
         dict: Mapping of node_name to resource info
     """
+    if not name:
+        return {}
+
     capacity = status.get("capacity", {})
     allocatable = status.get("allocatable", {})
     conditions = status.get("conditions", [])
@@ -352,9 +372,10 @@ def node_resource_index(
 # ============================================================================
 
 
-@kopf.on.probe()  # type: ignore[misc]
+@kopf.on.probe()
 def pod_count_probe(
-    pod_health_index: Index,
+    *,
+    pod_health_index: Index[Any, Any] | None = None,
     **_kwargs: Any,
 ) -> int:
     """Liveness probe: Return total number of indexed pods.
@@ -368,12 +389,13 @@ def pod_count_probe(
     Returns:
         int: Number of pods currently indexed
     """
-    return len(pod_health_index)
+    return len(pod_health_index) if pod_health_index else 0
 
 
-@kopf.on.probe()  # type: ignore[misc]
+@kopf.on.probe()
 def unhealthy_pod_count_probe(
-    pod_health_index: Index,
+    *,
+    pod_health_index: Index[Any, Any] | None = None,
     **_kwargs: Any,
 ) -> int:
     """Liveness probe: Return count of unhealthy pods.
@@ -385,17 +407,21 @@ def unhealthy_pod_count_probe(
     Returns:
         int: Number of unhealthy pods
     """
+    if not pod_health_index:
+        return 0
+
     return sum(
         1
-        for health_data in pod_health_index.values()
-        for health in health_data
+        for store in pod_health_index.values()
+        for health in store
         if not health.get("healthy", True)
     )
 
 
-@kopf.on.probe()  # type: ignore[misc]
+@kopf.on.probe()
 def deployment_count_probe(
-    deployment_replica_index: Index,
+    *,
+    deployment_replica_index: Index[Any, Any] | None = None,
     **_kwargs: Any,
 ) -> int:
     """Liveness probe: Return total number of indexed deployments.
@@ -407,4 +433,4 @@ def deployment_count_probe(
     Returns:
         int: Number of deployments currently indexed
     """
-    return len(deployment_replica_index)
+    return len(deployment_replica_index) if deployment_replica_index else 0

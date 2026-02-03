@@ -9,8 +9,10 @@ Defines the complete multi-agent workflow using LangGraph's StateGraph:
 
 import asyncio
 import shutil
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any, cast
 
+import httpx
 from langchain_core.runnables import RunnableConfig
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph import START, StateGraph
@@ -27,6 +29,8 @@ if TYPE_CHECKING:
 
 
 log = get_logger(__name__)
+
+_LOKI_VALUE_FIELDS = 2
 
 
 async def _run_kubectl(args: list[str], timeout_seconds: float) -> str | None:
@@ -52,6 +56,76 @@ async def _run_kubectl(args: list[str], timeout_seconds: float) -> str | None:
         return None
 
     return stdout.decode().strip() if stdout else None
+
+
+def _loki_base_url() -> str | None:
+    """Normalize Loki base URL for query endpoints."""
+    loki_url = settings.observability.loki_url
+    if not loki_url:
+        return None
+    base = loki_url.rstrip("/")
+    for suffix in ("/loki/api/v1/push", "/loki/api/v1/query", "/loki/api/v1/query_range"):
+        if base.endswith(suffix):
+            base = base[: -len(suffix)]
+            break
+    return base.rstrip("/")
+
+
+def _build_loki_query(resource_type: str, resource_name: str, namespace: str) -> str:
+    """Build a Loki label query for the resource."""
+    kind = resource_type.lower()
+    if kind == "pod":
+        return f'{{namespace="{namespace}", pod="{resource_name}"}}'
+    return f'{{namespace="{namespace}", pod=~"{resource_name}-.*"}}'
+
+
+async def _fetch_loki_logs(
+    resource_type: str,
+    resource_name: str,
+    namespace: str,
+    timeout_seconds: float,
+) -> str | None:
+    """Fetch logs from Loki if configured."""
+    if not settings.observability.loki_enabled:
+        return None
+    base_url = _loki_base_url()
+    if not base_url:
+        return None
+
+    end = datetime.now(UTC)
+    start = end - timedelta(minutes=15)
+    query = _build_loki_query(resource_type, resource_name, namespace)
+    params = {
+        "query": query,
+        "limit": "200",
+        "direction": "backward",
+        "start": str(int(start.timestamp() * 1_000_000_000)),
+        "end": str(int(end.timestamp() * 1_000_000_000)),
+    }
+
+    try:
+        async with httpx.AsyncClient(timeout=timeout_seconds) as client:
+            resp = await client.get(f"{base_url}/loki/api/v1/query_range", params=params)
+            resp.raise_for_status()
+            payload = resp.json()
+    except (httpx.HTTPError, ValueError) as exc:
+        log.debug("loki_query_failed", error=str(exc))
+        return None
+
+    results = payload.get("data", {}).get("result", [])
+    if not results:
+        return None
+
+    entries = [
+        (value[0], value[1])
+        for stream in results
+        for value in stream.get("values", [])
+        if isinstance(value, list) and len(value) >= _LOKI_VALUE_FIELDS
+    ]
+    if not entries:
+        return None
+    entries.sort(key=lambda item: item[0])
+    return "\n".join(line for _, line in entries[-200:])
 
 
 async def _fetch_kubectl_context(
@@ -109,12 +183,21 @@ async def _fetch_kubectl_context(
             timeout_seconds=timeout_seconds,
         )
 
+    loki_logs = await _fetch_loki_logs(
+        resource_type=resource_type,
+        resource_name=resource_name,
+        namespace=namespace,
+        timeout_seconds=timeout_seconds,
+    )
+    if loki_logs:
+        logs = loki_logs
+
     return {"logs": logs, "describe": describe, "events": events}
 
 
 def create_incident_workflow(
     checkpointer: InMemorySaver | None = None,
-) -> "CompiledStateGraph[IncidentState]":
+) -> "CompiledStateGraph[IncidentState, None, IncidentState, IncidentState]":
     """Create the incident analysis workflow graph.
 
     Args:
@@ -162,7 +245,8 @@ def create_incident_workflow(
     # - verifier_agent always: END
 
     # Compile graph with optional checkpointing
-    return builder.compile(checkpointer=checkpointer) if checkpointer else builder.compile()
+    compiled = builder.compile(checkpointer=checkpointer) if checkpointer else builder.compile()
+    return cast("CompiledStateGraph[IncidentState, None, IncidentState, IncidentState]", compiled)
 
 
 # ============================================================================

@@ -15,7 +15,7 @@ Usage:
     They watch the core.k8sgpt.ai/v1alpha1 Result resources.
 """
 
-import asyncio
+from datetime import UTC, datetime
 from functools import lru_cache
 from typing import Any
 
@@ -104,6 +104,40 @@ def _ensure_k8s_config() -> None:
 def _get_result_key(namespace: str, name: str) -> str:
     """Generate a unique key for a Result resource."""
     return f"{namespace}/{name}"
+
+
+def _extract_error_texts(body_essence: Any | None) -> set[str]:
+    """Extract stable error texts from a kopf `old`/`new` body essence."""
+    if not isinstance(body_essence, dict):
+        return set()
+
+    spec = body_essence.get("spec", {})
+    if not isinstance(spec, dict):
+        return set()
+
+    raw_errors = spec.get("error", [])
+    if not isinstance(raw_errors, list):
+        return set()
+
+    texts: set[str] = set()
+    for item in raw_errors:
+        if isinstance(item, str):
+            text = item
+        elif isinstance(item, dict):
+            value = item.get("text") or item.get("Text")
+            if not isinstance(value, str):
+                continue
+            text = value
+        else:
+            value = getattr(item, "text", None)
+            if not isinstance(value, str):
+                continue
+            text = value
+
+        if text:
+            texts.add(text)
+
+    return texts
 
 
 async def _trigger_aegis_workflow(
@@ -272,13 +306,12 @@ async def _create_aegis_incident(
         return incident_name
 
 
-@kopf.on.create(K8SGPT_API_GROUP, K8SGPT_API_VERSION, K8SGPT_RESULT_PLURAL)  # type: ignore[misc]
+@kopf.on.create(K8SGPT_API_GROUP, K8SGPT_API_VERSION, K8SGPT_RESULT_PLURAL)
 async def handle_k8sgpt_result_create(
+    *,
     body: kopf.Body,
-    _meta: kopf.Meta,
-    _spec: kopf.Spec,
-    namespace: str,
-    name: str,
+    namespace: str | None,
+    name: str | None,
     logger: kopf.Logger,
     **_kwargs: Any,
 ) -> dict[str, Any]:
@@ -300,6 +333,10 @@ async def handle_k8sgpt_result_create(
     Returns:
         Status update for the Result resource.
     """
+    if namespace is None or name is None:
+        logger.warning("K8sGPT Result missing namespace or name, skipping")
+        return {"processed": False, "skipped": True, "reason": "missing_identity"}
+
     result_key = _get_result_key(namespace, name)
 
     # Check if already processed
@@ -340,16 +377,14 @@ async def handle_k8sgpt_result_create(
     }
 
 
-@kopf.on.update(K8SGPT_API_GROUP, K8SGPT_API_VERSION, K8SGPT_RESULT_PLURAL)  # type: ignore[misc]
+@kopf.on.update(K8SGPT_API_GROUP, K8SGPT_API_VERSION, K8SGPT_RESULT_PLURAL)
 async def handle_k8sgpt_result_update(
+    *,
     body: kopf.Body,
-    _meta: kopf.Meta,
-    _spec: kopf.Spec,
-    namespace: str,
-    name: str,
-    old: kopf.BodyEssence,
-    new: kopf.BodyEssence,
-    _diff: kopf.Diff,
+    namespace: str | None,
+    name: str | None,
+    old: Any | None,
+    new: Any | None,
     logger: kopf.Logger,
     **_kwargs: Any,
 ) -> dict[str, Any]:
@@ -373,11 +408,15 @@ async def handle_k8sgpt_result_update(
     Returns:
         Status update for the Result resource.
     """
+    if namespace is None or name is None:
+        logger.warning("K8sGPT Result missing namespace or name, skipping")
+        return {"processed": False, "skipped": True, "reason": "missing_identity"}
+
     logger.info(f"K8sGPT Result updated: {namespace}/{name}")
 
     # Check if errors changed
-    old_errors = set(old.get("spec", {}).get("error", []))
-    new_errors = set(new.get("spec", {}).get("error", []))
+    old_errors = _extract_error_texts(old)
+    new_errors = _extract_error_texts(new)
 
     if old_errors == new_errors:
         logger.debug("No change in errors, skipping re-processing")
@@ -413,12 +452,11 @@ async def handle_k8sgpt_result_update(
     return {"processed": True, "skipped": True}
 
 
-@kopf.on.delete(K8SGPT_API_GROUP, K8SGPT_API_VERSION, K8SGPT_RESULT_PLURAL)  # type: ignore[misc]
+@kopf.on.delete(K8SGPT_API_GROUP, K8SGPT_API_VERSION, K8SGPT_RESULT_PLURAL)
 async def handle_k8sgpt_result_delete(
-    _body: kopf.Body,
-    _meta: kopf.Meta,
-    namespace: str,
-    name: str,
+    *,
+    namespace: str | None,
+    name: str | None,
     logger: kopf.Logger,
     **_kwargs: Any,
 ) -> None:
@@ -435,6 +473,10 @@ async def handle_k8sgpt_result_delete(
         logger: Kopf logger instance.
         **kwargs: Additional arguments from kopf.
     """
+    if namespace is None or name is None:
+        logger.warning("K8sGPT Result missing namespace or name on delete, skipping")
+        return
+
     logger.info(f"K8sGPT Result deleted: {namespace}/{name}")
 
     # Remove from processed cache
@@ -450,7 +492,7 @@ async def handle_k8sgpt_result_delete(
         patch_body = {
             "spec": {
                 "status": "Resolved",
-                "resolvedAt": asyncio.get_event_loop().time(),
+                "resolvedAt": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
             }
         }
 
@@ -471,8 +513,9 @@ async def handle_k8sgpt_result_delete(
             logger.warning(f"Failed to update Incident status: {e}")
 
 
-@kopf.on.startup()  # type: ignore[misc]
+@kopf.on.startup()
 async def configure_k8sgpt_watching(
+    *,
     logger: kopf.Logger,
     **_kwargs: Any,
 ) -> None:
@@ -497,7 +540,7 @@ async def configure_k8sgpt_watching(
         logger.exception(
             "Failed to load Kubernetes configuration. "
             "Please ensure you have valid kubeconfig or are running in-cluster. "
-            "Set AEGIS_K8S_IN_CLUSTER=true for in-cluster mode."
+            "Set K8S_IN_CLUSTER=true for in-cluster mode."
         )
         # Re-raise to prevent operator from starting with invalid config
         raise

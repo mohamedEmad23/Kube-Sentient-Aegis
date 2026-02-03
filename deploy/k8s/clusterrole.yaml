@@ -19,7 +19,7 @@ rules:
       - namespaces
       - persistentvolumeclaims
       - nodes
-    verbs: ["get", "list", "watch"]
+    verbs: ["get", "list", "watch", "create", "patch", "update"]
 
   # Secrets - narrowly scoped to only the vCluster kubeconfig secret
   # The operator only reads this specific secret for shadow environment setup
@@ -122,4 +122,4 @@ rules:
   - apiGroups: [""]
     resources:
       - namespaces
-    verbs: ["get", "list", "watch", "create", "delete"]
+    verbs: ["get", "list", "watch", "create", "delete", "patch", "update"]

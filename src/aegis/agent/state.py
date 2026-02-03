@@ -216,7 +216,7 @@ class VerificationPlan(BaseModel):
     )
     security_checks: list[str] = Field(
         default_factory=list,
-        description="Security checks to perform (currently disabled in MVP)",
+        description="Security checks to perform during verification",
     )
     rollback_on_failure: bool = Field(
         default=True,

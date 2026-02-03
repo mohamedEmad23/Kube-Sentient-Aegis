@@ -29,12 +29,13 @@ from typing import NoReturn
 import kopf
 from prometheus_client import start_http_server
 
-from aegis.config.settings import settings
+from aegis.config.settings import ComputeMode, settings
 
 # Import handlers to register their decorators
 # This must happen before kopf.run() is called
 from aegis.k8s_operator import handlers  # noqa: F401
 from aegis.observability._logging import configure_logging, get_logger
+from aegis.utils.gpu import detect_gpu_available
 
 
 # Configure logging before anything else
@@ -103,6 +104,23 @@ def main(
         shadow_runtime=settings.shadow.runtime.value,
         auto_fix=not settings.agent.dry_run_by_default,
         max_concurrent_shadows=settings.shadow.max_concurrent_shadows,
+    )
+
+    gpu_available = detect_gpu_available()
+    if settings.gpu.compute_mode == ComputeMode.AUTO:
+        settings.gpu.enabled = gpu_available
+    elif settings.gpu.compute_mode == ComputeMode.GPU:
+        settings.gpu.enabled = True
+        if not gpu_available:
+            logger.warning("gpu_requested_but_unavailable")
+    elif settings.gpu.compute_mode == ComputeMode.CPU:
+        settings.gpu.enabled = False
+
+    logger.info(
+        "gpu_configuration",
+        compute_mode=settings.gpu.compute_mode.value,
+        enabled=settings.gpu.enabled,
+        available=gpu_available,
     )
 
     # Configure kopf operator settings

@@ -10,7 +10,7 @@ Provides a production-ready client for interacting with Ollama:
 
 import re
 import time
-from typing import Any
+from typing import Any, Literal
 
 from ollama import ChatResponse, Client, ResponseError
 from pydantic import BaseModel
@@ -79,7 +79,7 @@ class OllamaClient:
         }
 
         # Configure JSON output
-        format_param: dict[str, Any] | str | None = None
+        format_param: dict[str, Any] | Literal["", "json"] | None = None
         if format_json and json_schema:
             # Pydantic schema for structured output
             format_param = json_schema

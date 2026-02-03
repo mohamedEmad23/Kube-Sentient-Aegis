@@ -4,8 +4,12 @@ Uses tinyllama:latest for generating practical fixes with kubectl commands and Y
 Returns Command object for routing to verifier or direct application.
 """
 
+import json
 from typing import Literal
 
+from kubernetes import client
+from kubernetes import config as k8s_config
+from kubernetes.client.rest import ApiException
 from langchain_core.messages import AIMessage, HumanMessage
 from langgraph.types import Command
 
@@ -21,6 +25,78 @@ from aegis.observability._metrics import agent_iterations_total
 
 
 log = get_logger(__name__)
+
+
+def _fetch_k8s_context(
+    resource_type: str,
+    resource_name: str,
+    namespace: str,
+) -> tuple[str, str]:
+    """Fetch current state and labels from the Kubernetes API."""
+    try:
+        if settings.kubernetes.in_cluster:
+            k8s_config.load_incluster_config()
+        else:
+            k8s_config.load_kube_config(
+                config_file=settings.kubernetes.kubeconfig_path,
+                context=settings.kubernetes.context,
+            )
+    except k8s_config.ConfigException as exc:
+        msg = f"unavailable (kubeconfig error: {exc})"
+        return msg, "{}"
+
+    core_api = client.CoreV1Api()
+    apps_api = client.AppsV1Api()
+
+    kind = resource_type.lower()
+    try:
+        if kind in {"pod", "pods"}:
+            pod = core_api.read_namespaced_pod(resource_name, namespace)
+            state = {
+                "phase": pod.status.phase if pod.status else None,
+                "node": pod.spec.node_name if pod.spec else None,
+                "pod_ip": pod.status.pod_ip if pod.status else None,
+                "restarts": {
+                    cs.name: cs.restart_count for cs in (pod.status.container_statuses or [])
+                }
+                if pod.status
+                else {},
+                "conditions": [cond.type for cond in (pod.status.conditions or [])]
+                if pod.status
+                else [],
+            }
+            labels = pod.metadata.labels if pod.metadata and pod.metadata.labels else {}
+        elif kind in {"deployment", "deployments"}:
+            deploy = apps_api.read_namespaced_deployment(resource_name, namespace)
+            state = {
+                "replicas": {
+                    "desired": deploy.spec.replicas if deploy.spec else None,
+                    "ready": deploy.status.ready_replicas if deploy.status else None,
+                    "available": deploy.status.available_replicas if deploy.status else None,
+                    "updated": deploy.status.updated_replicas if deploy.status else None,
+                },
+                "strategy": deploy.spec.strategy.type
+                if deploy.spec and deploy.spec.strategy
+                else None,
+                "images": [
+                    c.image
+                    for c in (
+                        deploy.spec.template.spec.containers
+                        if deploy.spec and deploy.spec.template and deploy.spec.template.spec
+                        else []
+                    )
+                ],
+                "conditions": [cond.type for cond in (deploy.status.conditions or [])]
+                if deploy.status
+                else [],
+            }
+            labels = deploy.metadata.labels if deploy.metadata and deploy.metadata.labels else {}
+        else:
+            return f"unavailable (unsupported resource type: {resource_type})", "{}"
+    except ApiException as exc:
+        return f"unavailable (k8s api error: {exc.reason})", "{}"
+
+    return json.dumps(state, indent=2, default=str), json.dumps(labels, indent=2)
 
 
 def _ensure_solution_verbosity(
@@ -50,7 +126,10 @@ def _ensure_actionable_fix(
     state: IncidentState,
     fix_proposal: FixProposal,
 ) -> FixProposal:
-    """Ensure the fix proposal has actionable commands or manifests."""
+    """Ensure the fix proposal has actionable commands or manifests.
+
+    Applies template-based fixes for common issues if LLM fails to generate commands.
+    """
     updates: dict[str, object] = {}
 
     commands = [cmd for cmd in fix_proposal.commands if cmd.strip()]
@@ -65,6 +144,50 @@ def _ensure_actionable_fix(
         return fix_proposal.model_copy(update=updates)
 
     if not commands and not fix_proposal.manifests:
+        # Try template-based fix for common issues
+        rca_result = state.get("rca_result")
+        if rca_result and rca_result.root_cause:
+            root_cause_lower = rca_result.root_cause.lower()
+            resource_type = state["resource_type"]
+            resource_name = state["resource_name"]
+            namespace = state["namespace"]
+
+            # OOMKilled fix template
+            if "oom" in root_cause_lower or "memory" in root_cause_lower:
+                log.info(
+                    "applying_template_fix",
+                    pattern="oom",
+                    resource=f"{resource_type}/{resource_name}",
+                )
+                return fix_proposal.model_copy(
+                    update={
+                        "fix_type": FixType.CONFIG_CHANGE,
+                        "description": "Increase memory limit to 512Mi to prevent OOMKilled",
+                        "analysis_steps": [
+                            "Detected OOMKilled in root cause analysis",
+                            "Current memory limit appears insufficient",
+                            "Applying recommended 512Mi limit with rolling update",
+                        ],
+                        "decision_rationale": (
+                            "Increasing memory limits directly addresses OOM failures with minimal risk. "
+                            "Using 512Mi provides sufficient headroom based on common patterns."
+                        ),
+                        "commands": [
+                            f"kubectl set resources {resource_type}/{resource_name} "
+                            f"--limits=memory=512Mi -n {namespace}",
+                        ],
+                        "rollback_commands": [
+                            f"kubectl set resources {resource_type}/{resource_name} "
+                            f"--limits=memory=128Mi -n {namespace}",
+                        ],
+                        "estimated_downtime": "zero-downtime",
+                        "risks": ["Pod(s) will be recreated"],
+                        "prerequisites": [],
+                        "confidence_score": 0.85,
+                    }
+                )
+
+        # Fallback to manual intervention
         manual_commands = [
             f"kubectl describe {state['resource_type']}/{state['resource_name']} -n {state['namespace']}",
             (
@@ -143,13 +266,18 @@ async def solution_agent(
         )
 
     # Build user prompt
+    current_state, labels = _fetch_k8s_context(
+        resource_type=state["resource_type"],
+        resource_name=state["resource_name"],
+        namespace=state["namespace"],
+    )
     user_prompt = SOLUTION_USER_PROMPT_TEMPLATE.format(
         resource_type=state["resource_type"],
         resource_name=state["resource_name"],
         namespace=state["namespace"],
         rca_result=rca_result.model_dump_json(indent=2),
-        current_state="unknown",  # TODO: Get from kubectl
-        labels="{}",  # TODO: Get from kubectl
+        current_state=current_state,
+        labels=labels,
     )
 
     messages = [
