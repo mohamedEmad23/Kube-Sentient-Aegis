@@ -338,7 +338,7 @@ class AgentSettings(BaseSettings):
         description="Model for Solution Generation agent",
     )
     verifier_model: str = Field(
-        default="phi3:mini",
+        default="tinyllama:latest",
         description="Model for Verification Planning agent",
     )
 
