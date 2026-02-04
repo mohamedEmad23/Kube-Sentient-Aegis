@@ -55,6 +55,17 @@ scrape_configs:
           service: 'grafana'
     metrics_path: '/metrics'
 
+  # ============ Demo API (NodePort) ============
+  # For Linux, replace host.docker.internal with your host IP.
+  - job_name: 'demo-api'
+    metrics_path: /metrics
+    static_configs:
+      - targets: ['192.168.139.174:30000']
+        labels:
+          namespace: 'production'
+          app: 'demo-api'
+          pod: 'demo-api-pod'
+
   # ============ Optional: Node Exporter (System Metrics) ============
   # Uncomment to enable system-level metrics (requires node-exporter service in docker-compose)
   # - job_name: 'node-exporter'
