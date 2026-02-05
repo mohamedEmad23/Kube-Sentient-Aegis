@@ -29,13 +29,12 @@ from typing import NoReturn
 import kopf
 from prometheus_client import start_http_server
 
-from aegis.config.settings import ComputeMode, settings
+from aegis.config.settings import settings
 
 # Import handlers to register their decorators
 # This must happen before kopf.run() is called
 from aegis.k8s_operator import handlers  # noqa: F401
 from aegis.observability._logging import configure_logging, get_logger
-from aegis.utils.gpu import detect_gpu_available
 
 
 # Configure logging before anything else
@@ -59,14 +58,14 @@ def main(
         namespace: Kubernetes namespace to monitor. If None, monitors all namespaces.
         peering_name: Name for operator peering (multi-instance coordination).
                      If None, uses value from settings or generates one.
-        liveness_port: Port for liveness/readiness probes. If None, uses settings.
+        liveness_port: Base port for metrics (Prometheus). Health uses port + 1.
         priority: Operator priority for peering (higher = more preferred).
         dev_mode: If True, runs in development mode (pauses other operators).
 
     Environment Variables:
         K8S_NAMESPACE: Override namespace
         K8S_PEERING_ID: Override peering name
-        OBS_PROMETHEUS_PORT: Override liveness port
+        OBS_PROMETHEUS_PORT: Override metrics port
         DEBUG: Enable debug mode
 
     Examples:
@@ -85,14 +84,16 @@ def main(
     # Use settings as defaults
     namespace = namespace or settings.kubernetes.namespace
     peering_name = peering_name or settings.kubernetes.peering_id or "aegis-operator"
-    liveness_port = liveness_port or settings.observability.prometheus_port
+    metrics_port = liveness_port or settings.observability.prometheus_port or 8080
+    health_port = metrics_port + 1
 
     logger.info(
         "🚀 Starting AEGIS Kubernetes Operator",
         version=settings.app_version,
         namespace=namespace or "all",
         peering=peering_name,
-        liveness_port=liveness_port,
+        metrics_port=metrics_port,
+        health_port=health_port,
         dev_mode=dev_mode,
         debug=settings.debug,
     )
@@ -106,21 +107,16 @@ def main(
         max_concurrent_shadows=settings.shadow.max_concurrent_shadows,
     )
 
-    gpu_available = detect_gpu_available()
-    if settings.gpu.compute_mode == ComputeMode.AUTO:
-        settings.gpu.enabled = gpu_available
-    elif settings.gpu.compute_mode == ComputeMode.GPU:
-        settings.gpu.enabled = True
-        if not gpu_available:
-            logger.warning("gpu_requested_but_unavailable")
-    elif settings.gpu.compute_mode == ComputeMode.CPU:
-        settings.gpu.enabled = False
+    # GPU detection completely disabled - kubeconfig issues in containerized envs
+    gpu_available = False
+    settings.gpu.enabled = False
 
     logger.info(
         "gpu_configuration",
         compute_mode=settings.gpu.compute_mode.value,
-        enabled=settings.gpu.enabled,
-        available=gpu_available,
+        enabled=False,
+        available=False,
+        note="GPU detection disabled for Docker deployment",
     )
 
     # Configure kopf operator settings
@@ -152,16 +148,16 @@ def main(
     # Start Prometheus metrics HTTP server
     if settings.observability.prometheus_enabled:
         try:
-            start_http_server(liveness_port)
+            start_http_server(metrics_port)
             logger.info(
                 "📊 Prometheus metrics server started",
-                port=liveness_port,
-                endpoint=f"http://0.0.0.0:{liveness_port}/metrics",
+                port=metrics_port,
+                endpoint=f"http://0.0.0.0:{metrics_port}/metrics",
             )
         except OSError as e:
             logger.warning(
                 "⚠️ Could not start metrics server (port may be in use)",
-                port=liveness_port,
+                port=metrics_port,
                 error=str(e),
             )
 
@@ -171,7 +167,7 @@ def main(
             settings=kopf_settings,
             standalone=not peering_name,  # Run as standalone operator if no peering
             namespace=namespace,  # Monitor specific namespace or all
-            liveness_endpoint=f"http://0.0.0.0:{liveness_port}/healthz",
+            liveness_endpoint=f"http://0.0.0.0:{health_port}/healthz",
             priority=priority,
         )
 
@@ -252,7 +248,7 @@ Environment Variables:
         "--liveness-port",
         type=int,
         default=None,
-        help="Port for liveness/readiness probes",
+        help="Base port for metrics (Prometheus). Health uses port + 1.",
     )
 
     parser.add_argument(

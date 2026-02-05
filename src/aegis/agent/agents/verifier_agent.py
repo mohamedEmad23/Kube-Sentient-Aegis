@@ -1,6 +1,6 @@
 """Verification Planning Agent.
 
-Uses phi3:mini for creating comprehensive verification plans with shadow testing.
+Uses configured LLM provider (Gemini/Groq/Ollama fallback) for verification planning.
 Returns Command object to end workflow with verification plan.
 """
 
@@ -9,7 +9,7 @@ from typing import Literal
 from langchain_core.messages import AIMessage, HumanMessage
 from langgraph.types import Command
 
-from aegis.agent.llm.ollama import get_ollama_client
+from aegis.agent.llm.router import chat_with_schema_with_fallback
 from aegis.agent.prompts.verifier_prompts import (
     VERIFIER_SYSTEM_PROMPT,
     VERIFIER_USER_PROMPT_TEMPLATE,
@@ -79,7 +79,6 @@ async def verifier_agent(
         risk_count=len(fix.risks) if fix else 0,
     )
 
-    ollama = get_ollama_client()
     fix_proposal = state.get("fix_proposal")
     rca_result = state.get("rca_result")
 
@@ -112,12 +111,15 @@ async def verifier_agent(
 
     try:
         # Call LLM with Pydantic schema validation
-        verification_plan: VerificationPlan = ollama.chat_with_schema(
+        verification_plan, provider_used, model_used = chat_with_schema_with_fallback(
             messages=messages,
             schema=VerificationPlan,
+            provider=settings.agent.verifier_provider,
             model=settings.agent.verifier_model,
             temperature=0.4,  # Moderate temperature for creative test scenarios
+            fallback_model=settings.agent.verifier_fallback_model,
         )
+        assert isinstance(verification_plan, VerificationPlan)
         verification_plan = _ensure_verifier_verbosity(state, verification_plan)
 
         # Record metrics
@@ -142,6 +144,9 @@ async def verifier_agent(
             security_checks=verification_plan.security_checks,
         )
 
+        llm_trace = dict(state.get("llm_trace") or {})
+        llm_trace["verifier_agent"] = {"provider": provider_used, "model": model_used}
+
         # Update messages
         ai_message = AIMessage(
             content=(
@@ -157,6 +162,7 @@ async def verifier_agent(
                 "verification_plan": verification_plan,
                 "current_agent": AgentNode.END,
                 "messages": [ai_message],
+                "llm_trace": llm_trace,
             },
         )
 

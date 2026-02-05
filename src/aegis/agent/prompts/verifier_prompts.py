@@ -111,7 +111,7 @@ Example valid JSON:
     "users": 100,
     "spawn_rate": 10,
     "duration_seconds": 180,
-    "target_url": "http://nginx.default.svc.cluster.local"
+    "target_url": "http://demo-api.production.svc.cluster.local"
   }},
   "security_checks": ["trivy:image-scan"],
   "rollback_on_failure": true,

@@ -1,6 +1,6 @@
 """Root Cause Analysis (RCA) Agent.
 
-Uses llama3.2:3b-instruct-q5_k_m for incident analysis and root cause identification.
+Uses configured LLM provider (Groq/Gemini/Ollama fallback) for incident analysis.
 Returns Command object for dynamic routing based on confidence score.
 """
 
@@ -10,7 +10,7 @@ from typing import Literal
 from langchain_core.messages import AIMessage, HumanMessage
 from langgraph.types import Command
 
-from aegis.agent.llm.ollama import get_ollama_client
+from aegis.agent.llm.router import chat_with_schema_with_fallback
 from aegis.agent.prompts.rca_prompts import RCA_SYSTEM_PROMPT, RCA_USER_PROMPT_TEMPLATE
 from aegis.agent.state import AgentNode, IncidentState, RCAResult
 from aegis.config.settings import settings
@@ -93,7 +93,32 @@ async def rca_agent(
         events_len=len(state.get("kubectl_events") or ""),
     )
 
-    ollama = get_ollama_client()
+    # Format Prometheus metrics for prompt
+    prometheus_metrics_text = "No Prometheus metrics available"
+    if state.get("prometheus_metrics"):
+        prom_data = state["prometheus_metrics"]
+        metrics_lines = []
+        if prom_data.get("cpu_usage_cores") is not None:
+            metrics_lines.append(f"CPU Usage: {prom_data['cpu_usage_cores']:.3f} cores")
+        if prom_data.get("memory_usage_bytes") is not None:
+            mem_mb = prom_data["memory_usage_bytes"] / (1024 * 1024)
+            metrics_lines.append(f"Memory Usage: {mem_mb:.1f} MB")
+        if prom_data.get("memory_utilization_pct") is not None:
+            metrics_lines.append(f"Memory Utilization: {prom_data['memory_utilization_pct']:.1f}%")
+        if prom_data.get("restart_count") is not None:
+            metrics_lines.append(f"Restart Count: {prom_data['restart_count']}")
+        if prom_data.get("pod_phase") is not None:
+            metrics_lines.append(f"Pod Phase: {prom_data['pod_phase']}")
+        if prom_data.get("request_rate_per_sec") is not None:
+            metrics_lines.append(f"Request Rate: {prom_data['request_rate_per_sec']:.2f} req/s")
+        if prom_data.get("error_rate_pct") is not None:
+            metrics_lines.append(f"Error Rate: {prom_data['error_rate_pct']:.2f}%")
+        if prom_data.get("latency_p99_ms") is not None:
+            metrics_lines.append(f"P99 Latency: {prom_data['latency_p99_ms']:.1f} ms")
+        if metrics_lines:
+            prometheus_metrics_text = "\n".join(metrics_lines)
+
+    grafana_url = state.get("grafana_dashboard_url") or "No Grafana dashboard configured"
 
     # Build user prompt with context
     user_prompt = RCA_USER_PROMPT_TEMPLATE.format(
@@ -104,6 +129,8 @@ async def rca_agent(
         kubectl_logs=state.get("kubectl_logs", "No logs available"),
         kubectl_describe=state.get("kubectl_describe", "No describe output"),
         kubectl_events=state.get("kubectl_events", "No recent events"),
+        prometheus_metrics=prometheus_metrics_text,
+        grafana_dashboard_url=grafana_url,
     )
 
     messages = [
@@ -115,11 +142,13 @@ async def rca_agent(
         # Time the analysis
         with incident_analysis_duration_seconds.labels(agent_name="rca_agent").time():
             # Call LLM with Pydantic schema validation
-            rca_result = ollama.chat_with_schema(
+            rca_result, provider_used, model_used = chat_with_schema_with_fallback(
                 messages=messages,
                 schema=RCAResult,
+                provider=settings.agent.rca_provider,
                 model=settings.agent.rca_model,
                 temperature=0.3,  # Lower temperature for more focused analysis
+                fallback_model=settings.agent.rca_fallback_model,
             )
             # Type assertion for runtime verification
             assert isinstance(rca_result, RCAResult)
@@ -150,6 +179,9 @@ async def rca_agent(
             content=f"Root cause identified: {rca_result.root_cause}\nConfidence: {rca_result.confidence_score}"
         )
 
+        llm_trace = dict(state.get("llm_trace") or {})
+        llm_trace["rca_agent"] = {"provider": provider_used, "model": model_used}
+
         # Decision: proceed to solution agent if confidence is high
         if rca_result.confidence_score >= RCA_CONFIDENCE_THRESHOLD:
             log.info(
@@ -163,6 +195,7 @@ async def rca_agent(
                     "rca_result": rca_result,
                     "current_agent": AgentNode.SOLUTION,
                     "messages": [ai_message],
+                    "llm_trace": llm_trace,
                 },
             )
         log.warning(
@@ -182,6 +215,7 @@ async def rca_agent(
                 "current_agent": AgentNode.END,
                 "error": f"Insufficient confidence in analysis ({rca_result.confidence_score:.2f} < 0.7)",
                 "messages": [ai_message],
+                "llm_trace": llm_trace,
             },
         )
 

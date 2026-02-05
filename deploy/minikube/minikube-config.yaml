@@ -1,66 +1,37 @@
 # Minikube Configuration for AEGIS Development
+# Optimized for 40GB RAM / 8 CPU host (using 60% = 24GB RAM, 5 CPUs)
 #
-# This file documents the minikube setup for the AEGIS operator
-# with K8sGPT integration.
+# IMPORTANT: Always use --embed-certs=true to avoid certificate file path issues
+# in Docker containers.
 #
-# Start minikube with:
-#   minikube start --profile aegis \
-#     --cpus=4 \
-#     --memory=8192 \
+# Start cluster:
+#   minikube start --profile=aegis \
 #     --driver=docker \
-#     --kubernetes-version=v1.29.0 \
-#     --addons=metrics-server,ingress
-#
-# Or use the setup script: ./scripts/setup-minikube.sh
+#     --cpus=5 \
+#     --memory=24576 \
+#     --disk-size=50g \
+#     --kubernetes-version=v1.30.0 \
+#     --embed-certs=true \
+#     --addons=metrics-server,ingress \
+#     --extra-config=apiserver.service-node-port-range=1-65535
 
-# Minikube profile configuration (reference)
 profile: aegis
 
-# Resource allocation
 resources:
-  cpus: 4
-  memory: 8192  # MB
+  cpus: 5
+  memory: 24576  # 24GB in MB
 
-# Kubernetes version
-kubernetes-version: v1.29.0
-
-# Container runtime
+kubernetes-version: v1.30.0
 container-runtime: docker
 driver: docker
 
-# Addons to enable
 addons:
-  - metrics-server   # Required for HPA analysis
-  - ingress          # For ingress analyzer
-  - ingress-dns      # DNS for ingress
-  # - registry       # Optional: local container registry
+  - metrics-server
+  - ingress
 
-# Extra configuration
 extra-config:
-  # Enable admission controllers for webhook analysis
   apiserver.enable-admission-plugins: "NamespaceLifecycle,LimitRanger,ServiceAccount,DefaultStorageClass,DefaultTolerationSeconds,NodeRestriction,MutatingAdmissionWebhook,ValidatingAdmissionWebhook,ResourceQuota"
-
-# Mount host directories (for Ollama access)
-mount: false
-mount-string: ""
+  apiserver.service-node-port-range: "1-65535"
 
 # Network configuration
-# Use host network for easier Ollama access
-# Or use minikube tunnel for LoadBalancer services
-
----
-# Alternative: Kind cluster configuration
-# kind: Cluster
-# apiVersion: kind.x-k8s.io/v1alpha4
-# name: aegis-cluster
-# nodes:
-#   - role: control-plane
-#     extraPortMappings:
-#       - containerPort: 30000
-#         hostPort: 30000
-#         protocol: TCP
-#       - containerPort: 30001
-#         hostPort: 30001
-#         protocol: TCP
-#   - role: worker
-#   - role: worker
+# Run `minikube tunnel` in separate terminal for LoadBalancer support

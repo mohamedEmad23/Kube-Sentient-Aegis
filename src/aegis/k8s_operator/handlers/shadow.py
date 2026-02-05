@@ -10,6 +10,7 @@ This module provides:
 - Integration with VClusterManager (when implemented)
 """
 
+import asyncio
 import json
 from datetime import UTC, datetime
 from http import HTTPStatus
@@ -618,10 +619,11 @@ async def _run_shadow_verification(
     proposal: dict[str, Any],
     stopped: DaemonStopped,
 ) -> bool:
-    """Internal: Run shadow verification workflow.
+    """Internal: Run shadow verification workflow with retry logic.
 
     This function creates a shadow environment, applies AI changes,
-    monitors health, and returns success/failure.
+    monitors health, and returns success/failure. Implements retry
+    logic with exponential backoff for transient failures.
 
     Args:
         deployment_name: Name of the deployment
@@ -632,53 +634,155 @@ async def _run_shadow_verification(
     Returns:
         bool: True if shadow test passed, False otherwise
     """
+    from aegis.agent.state import RetryContext
+    from aegis.observability._metrics import shadow_retries_total
     from aegis.shadow.manager import get_shadow_manager
 
-    log.info(
-        "🔬 Creating shadow environment",
-        deployment=deployment_name,
-        namespace=namespace,
-    )
+    # Initialize retry context
+    max_retries = int(getattr(settings.shadow, "max_retries", 3))
+    retry_ctx = RetryContext(attempt=1, max_retries=max_retries)
 
     shadow_manager = get_shadow_manager()
+    last_error: str | None = None
 
-    try:
-        # Create shadow environment
-        shadow_env = await shadow_manager.create_shadow(
-            source_namespace=namespace,
-            source_resource=deployment_name,
-            source_resource_kind="Deployment",
-        )
-
-        if stopped:
-            log.warning("shadow_test_cancelled", deployment=deployment_name)
-            await shadow_manager.cleanup(shadow_env.id)
-            return False
-
-        log.info("✅ Shadow environment created", shadow_id=shadow_env.id)
-
-        # Run verification with proposed changes
-        changes = proposal.get("changes", {})
-        passed = await shadow_manager.run_verification(
-            shadow_id=shadow_env.id,
-            changes=changes,
-            duration=settings.shadow.verification_timeout,
-        )
-
+    # Retry loop
+    while retry_ctx.attempt <= retry_ctx.max_retries:
         log.info(
-            "Shadow verification result",
-            passed=passed,
-            health_score=shadow_env.health_score,
+            "🔬 Creating shadow environment",
+            deployment=deployment_name,
+            namespace=namespace,
+            attempt=retry_ctx.attempt,
+            max_retries=retry_ctx.max_retries,
         )
 
-        # Cleanup
-        await shadow_manager.cleanup(shadow_env.id)
+        shadow_env = None
+        try:
+            # Create shadow environment
+            shadow_env = await shadow_manager.create_shadow(
+                source_namespace=namespace,
+                source_resource=deployment_name,
+                source_resource_kind="Deployment",
+            )
 
-    except Exception:
-        log.exception("shadow_verification_error")
-        return False
-    else:
-        return passed
+            if stopped:
+                log.warning("shadow_test_cancelled", deployment=deployment_name)
+                if shadow_env:
+                    await shadow_manager.cleanup(shadow_env.id)
+                return False
+
+            log.info("✅ Shadow environment created", shadow_id=shadow_env.id)
+
+            # Run verification with proposed changes
+            changes = proposal.get("changes", {})
+            passed = await shadow_manager.run_verification(
+                shadow_id=shadow_env.id,
+                changes=changes,
+                duration=settings.shadow.verification_timeout,
+            )
+
+            log.info(
+                "Shadow verification result",
+                passed=passed,
+                health_score=shadow_env.health_score,
+                attempt=retry_ctx.attempt,
+            )
+
+            # Cleanup
+            await shadow_manager.cleanup(shadow_env.id)
+
+            # Track retry outcome
+            if passed:
+                shadow_retries_total.labels(
+                    outcome="success",
+                    attempt=str(retry_ctx.attempt),
+                ).inc()
+                return True
+
+            # Test failed - check if we should retry
+            last_error = f"Verification failed: health={shadow_env.health_score:.2f}"
+
+            if not retry_ctx.should_retry():
+                log.error(
+                    "shadow_verification_failed_final",
+                    deployment=deployment_name,
+                    attempts=retry_ctx.attempt,
+                    error=last_error,
+                )
+                shadow_retries_total.labels(
+                    outcome="failure",
+                    attempt=str(retry_ctx.attempt),
+                ).inc()
+                return False
+
+            # Prepare for next retry
+            backoff = retry_ctx.next_backoff()
+            log.warning(
+                "shadow_verification_failed_retrying",
+                deployment=deployment_name,
+                attempt=retry_ctx.attempt,
+                backoff_seconds=backoff,
+                error=last_error,
+            )
+
+            retry_ctx.attempt += 1
+            retry_ctx.last_failure_reason = last_error
+
+            # Wait with exponential backoff
+            await asyncio.sleep(backoff)
+
+        except Exception as e:
+            last_error = str(e)
+            log.exception(
+                "shadow_verification_error",
+                deployment=deployment_name,
+                attempt=retry_ctx.attempt,
+            )
+
+            # Cleanup on error
+            if shadow_env:
+                try:
+                    await shadow_manager.cleanup(shadow_env.id)
+                except Exception:
+                    log.warning("shadow_cleanup_failed", shadow_id=shadow_env.id)
+
+            # Check if we should retry
+            if not retry_ctx.should_retry():
+                log.error(
+                    "shadow_verification_error_final",
+                    deployment=deployment_name,
+                    attempts=retry_ctx.attempt,
+                    error=last_error,
+                )
+                shadow_retries_total.labels(
+                    outcome="failure",
+                    attempt=str(retry_ctx.attempt),
+                ).inc()
+                return False
+
+            # Prepare for next retry
+            backoff = retry_ctx.next_backoff()
+            log.warning(
+                "shadow_verification_exception_retrying",
+                deployment=deployment_name,
+                attempt=retry_ctx.attempt,
+                backoff_seconds=backoff,
+                error=last_error,
+            )
+
+            retry_ctx.attempt += 1
+            retry_ctx.last_failure_reason = last_error
+
+            # Wait with exponential backoff
+            await asyncio.sleep(backoff)
+
+    # All retries exhausted
+    log.error(
+        "shadow_verification_retries_exhausted",
+        deployment=deployment_name,
+        total_attempts=retry_ctx.attempt - 1,
+        last_error=last_error,
+    )
+    return False
 
 
 def _predict_load(

@@ -13,12 +13,14 @@ Features:
 """
 
 import asyncio
+import atexit
 import base64
 import copy
 import os
 import re
 import shlex
 import shutil
+import socket
 import tempfile
 import time
 from collections.abc import Iterable
@@ -29,14 +31,19 @@ from pathlib import Path
 from typing import Any, cast
 from urllib.parse import urlparse
 
+import urllib3
 import yaml
 from kubernetes import client, config
 from kubernetes.client.rest import ApiException
 
-from aegis.agent.state import LoadTestConfig, VerificationPlan
-from aegis.config.settings import SandBoxRuntime, settings
-from aegis.observability._logging import get_logger
-from aegis.observability._metrics import (
+
+# Suppress urllib3 InsecureRequestWarning for vcluster connections
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
+from aegis.agent.state import LoadTestConfig, VerificationPlan  # noqa: E402
+from aegis.config.settings import SandBoxRuntime, settings  # noqa: E402
+from aegis.observability._logging import get_logger  # noqa: E402
+from aegis.observability._metrics import (  # noqa: E402
     shadow_environments_active,
     shadow_load_test_duration_seconds,
     shadow_load_tests_total,
@@ -45,8 +52,8 @@ from aegis.observability._metrics import (
     shadow_verification_duration_seconds,
     shadow_verifications_total,
 )
-from aegis.security.pipeline import SecurityPipeline
-from aegis.shadow.vcluster import VClusterManager
+from aegis.security.pipeline import SecurityPipeline  # noqa: E402
+from aegis.shadow.vcluster import VClusterManager  # noqa: E402
 
 
 log = get_logger(__name__)
@@ -64,8 +71,10 @@ VCLUSTER_KUBECONFIG_NAME = "vc-shadow-kubeconfig"
 VCLUSTER_KUBECONFIG_SECRET_MAX_ATTEMPTS = 10
 SMOKE_TEST_IMAGE = "curlimages/curl:8.5.0"
 LOAD_TEST_IMAGE = "locustio/locust:2.42.6"
+FALLBACK_IMAGE = "python:3.12-slim"  # Fallback for non-existent images
 DEFAULT_SMOKE_PATHS = ["/health", "/ready", "/healthz", "/readyz"]
-SMOKE_TEST_TIMEOUT_SECONDS = 120
+SMOKE_TEST_TIMEOUT_SECONDS = 180
+ROLLOUT_TIMEOUT_SECONDS = 600  # 10 minutes for pod rollout
 JOB_POLL_INTERVAL_SECONDS = 2
 CURL_CONNECT_TIMEOUT_SECONDS = 10
 CURL_MAX_TIME_SECONDS = 30
@@ -121,6 +130,7 @@ class ShadowEnvironment:
     runtime: str | None = None
     host_namespace: str | None = None
     kubeconfig_path: str | None = None
+    _port_forward_proc: Any | None = None  # Stores the process object
 
 
 @dataclass
@@ -135,13 +145,7 @@ class ShadowClients:
 
 
 class ShadowManager:
-    """Manager for shadow verification environments.
-
-    Supports multiple runtime backends:
-    - namespace: Simple namespace isolation (fast, limited isolation)
-    - vcluster: Full virtual cluster (slower, complete isolation)
-    - kind: Local kind cluster (for development)
-    """
+    """Manager for shadow verification environments."""
 
     def __init__(self) -> None:
         """Initialize shadow manager with Kubernetes clients."""
@@ -194,20 +198,7 @@ class ShadowManager:
         source_resource_kind: str,
         shadow_id: str | None = None,
     ) -> ShadowEnvironment:
-        """Create a new shadow environment.
-
-        Args:
-            source_namespace: Namespace of the source resource
-            source_resource: Name of the source resource to clone
-            source_resource_kind: Kind of the source resource (Pod, Deployment, etc.)
-            shadow_id: Optional custom ID for the shadow environment
-
-        Returns:
-            ShadowEnvironment: Created shadow environment
-
-        Raises:
-            RuntimeError: If max concurrent shadows exceeded or creation fails
-        """
+        """Create a new shadow environment."""
         if not settings.shadow.enabled:
             log.warning("shadow_disabled")
             raise RuntimeError("Shadow verification is disabled (SHADOW_ENABLED=false)")
@@ -229,7 +220,6 @@ class ShadowManager:
                     ),
                     **resource_check,
                 )
-                # Continue anyway but log warning
 
         # Generate shadow ID if not provided
         if not shadow_id:
@@ -241,13 +231,6 @@ class ShadowManager:
         target_namespace = (
             source_namespace if self.runtime == SandBoxRuntime.VCLUSTER.value else shadow_namespace
         )
-        if sanitized_id != shadow_id:
-            log.debug(
-                "shadow_id_sanitized",
-                original=shadow_id,
-                sanitized=sanitized_id,
-                namespace=shadow_namespace,
-            )
 
         env = ShadowEnvironment(
             id=sanitized_id,
@@ -264,17 +247,6 @@ class ShadowManager:
 
         self._environments[env.id] = env
         env.logs.append(f"Creating shadow environment: {env.id}")
-
-        annotations = {
-            SHADOW_ID_ANNOTATION: sanitized_id,
-            SHADOW_SOURCE_NAMESPACE_ANNOTATION: source_namespace,
-            SHADOW_SOURCE_NAME_ANNOTATION: source_resource,
-            SHADOW_SOURCE_KIND_ANNOTATION: source_resource_kind,
-            SHADOW_RUNTIME_ANNOTATION: self.runtime,
-            SHADOW_TARGET_NAMESPACE_ANNOTATION: target_namespace,
-            SHADOW_STATUS_ANNOTATION: ShadowStatus.CREATING.value,
-            SHADOW_CREATED_AT_ANNOTATION: env.created_at.isoformat(),
-        }
 
         if self.runtime != SandBoxRuntime.VCLUSTER.value:
             msg = (
@@ -297,6 +269,16 @@ class ShadowManager:
 
         try:
             # Create host namespace for vCluster
+            annotations = {
+                SHADOW_ID_ANNOTATION: sanitized_id,
+                SHADOW_SOURCE_NAMESPACE_ANNOTATION: source_namespace,
+                SHADOW_SOURCE_NAME_ANNOTATION: source_resource,
+                SHADOW_SOURCE_KIND_ANNOTATION: source_resource_kind,
+                SHADOW_RUNTIME_ANNOTATION: self.runtime,
+                SHADOW_TARGET_NAMESPACE_ANNOTATION: target_namespace,
+                SHADOW_STATUS_ANNOTATION: ShadowStatus.CREATING.value,
+                SHADOW_CREATED_AT_ANNOTATION: env.created_at.isoformat(),
+            }
             await self._create_namespace(
                 shadow_namespace,
                 core_api=self._core_api,
@@ -316,13 +298,116 @@ class ShadowManager:
             await self._wait_for_vcluster_resources(env.id, shadow_namespace)
             env.logs.append("vCluster resources ready")
 
-            # Get vCluster kubeconfig and build shadow clients
-            kubeconfig_path = await self._write_vcluster_kubeconfig(env.id, shadow_namespace)
-            env.kubeconfig_path = kubeconfig_path
-            shadow_clients = self._build_shadow_clients(kubeconfig_path)
-            self._shadow_clients[env.id] = shadow_clients
+            # ================= START ROBUST PATCH =================
+            # FORCE LOCAL CONNECTIVITY FOR HACKATHON/LOCAL DEV
+            log.info(f" 🛠️  [PATCH] establishing local vcluster proxy for {env.id}...")
 
-            # Wait for vCluster API to be reachable before proceeding
+            # Write kubeconfig to temp file to read secrets
+            temp_kubeconfig_path = await self._write_vcluster_kubeconfig(env.id, shadow_namespace)
+            with Path(temp_kubeconfig_path).open() as f:
+                temp_config = yaml.safe_load(f)
+
+            # Find the vCluster service
+            vcluster_service, vcluster_port = await self._resolve_vcluster_service(
+                temp_config, shadow_name=env.id, namespace=shadow_namespace
+            )
+
+            if not vcluster_service:
+                log.error(" ❌ [PATCH] vCluster service not found! Cannot start proxy.")
+                env.kubeconfig_path = temp_kubeconfig_path
+                shadow_clients = self._build_shadow_clients(temp_kubeconfig_path)
+                self._shadow_clients[env.id] = shadow_clients
+            else:
+                # Find a random free port to avoid collisions
+                local_port = self._get_free_port()
+                log.info(
+                    f" 🔌 [PATCH] Starting port-forward to {vcluster_service}:{vcluster_port} -> localhost:{local_port}"
+                )
+
+                # Use asyncio.create_subprocess_exec for the process
+                port_forward_proc = await asyncio.create_subprocess_exec(
+                    "kubectl",
+                    "port-forward",
+                    f"svc/{vcluster_service}",
+                    f"{local_port}:{vcluster_port}",
+                    "-n",
+                    shadow_namespace,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                )
+
+                # Store process for cleanup
+                env._port_forward_proc = port_forward_proc
+
+                # Register atexit handler to kill the process on script exit
+                def cleanup_process(proc):
+                    try:
+                        if proc.returncode is None:
+                            proc.kill()
+                    except:
+                        pass
+
+                atexit.register(cleanup_process, port_forward_proc)
+
+                # Wait for port-forward to establish
+                log.info(" ⏳ [PATCH] Waiting for port-forward tunnel to be ready...")
+                tunnel_ready = False
+                max_attempts = 15
+
+                for attempt in range(max_attempts):
+                    await asyncio.sleep(1)
+
+                    # Check if process died
+                    if port_forward_proc.returncode is not None:
+                        _, stderr = await port_forward_proc.communicate()
+                        error_msg = stderr.decode() if stderr else "Unknown error"
+                        log.error(f" ❌ [PATCH] Port-forward died: {error_msg}")
+                        break
+
+                    # Check connectivity
+                    try:
+                        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                        sock.settimeout(1)
+                        result = sock.connect_ex(("localhost", local_port))
+                        sock.close()
+                        if result == 0:
+                            tunnel_ready = True
+                            log.info(
+                                f" ✅ [PATCH] Port-forward tunnel ready (attempt {attempt + 1}/{max_attempts})"
+                            )
+                            break
+                    except Exception:
+                        pass
+
+                if not tunnel_ready:
+                    log.warning(
+                        f" ⚠️  [PATCH] Port-forward check failed. Process active: {port_forward_proc.returncode is None}"
+                    )
+
+                # Create local kubeconfig
+                local_config = temp_config.copy()
+                if local_config and local_config.get("clusters"):
+                    local_config["clusters"][0]["cluster"]["server"] = (
+                        f"https://localhost:{local_port}"
+                    )
+                    local_config["clusters"][0]["cluster"]["insecure-skip-tls-verify"] = True
+                    # Remove BOTH certificate fields to avoid kubectl conflict
+                    local_config["clusters"][0]["cluster"].pop("certificate-authority-data", None)
+                    local_config["clusters"][0]["cluster"].pop("certificate-authority", None)
+
+                local_kubeconfig = Path.cwd() / f"vcluster-{env.id}-kubeconfig.yaml"
+                with local_kubeconfig.open("w") as f:
+                    yaml.safe_dump(local_config, f)
+
+                env.kubeconfig_path = str(local_kubeconfig)
+                shadow_clients = self._build_shadow_clients(env.kubeconfig_path)
+                self._shadow_clients[env.id] = shadow_clients
+                log.info(
+                    f" 🔄 [PATCH] Client initialized with localhost port-forward: {local_kubeconfig}"
+                )
+            # ================= END ROBUST PATCH =================
+
+            # Wait for vCluster API to be reachable
             await self._wait_for_vcluster_api(shadow_clients.core, env.id)
 
             # Ensure target namespace exists inside shadow cluster
@@ -362,6 +447,13 @@ class ShadowManager:
             raise
 
         return env
+
+    def _get_free_port(self) -> int:
+        """Find a free port on localhost."""
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.bind(("", 0))
+            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            return s.getsockname()[1]
 
     async def run_verification(
         self,
@@ -513,19 +605,61 @@ class ShadowManager:
         security_pipeline: SecurityPipeline,
         security_results: dict[str, Any],
     ) -> bool:
+        """Run pre-deployment Kubesec security scan and block on Critical vulnerabilities."""
+        from aegis.observability._metrics import security_blocks_total
+
         manifests = changes.get("manifests")
         if not manifests:
             return True
 
         kubesec_result = await security_pipeline.scan_manifests(manifests)
         security_results["kubesec"] = kubesec_result
-        if kubesec_result.get("passed", True):
-            env.logs.append("Kubesec scan passed")
+
+        # Check for Critical vulnerabilities
+        if not kubesec_result.get("passed", True):
+            # Extract vulnerability details
+            vulnerabilities = kubesec_result.get("vulnerabilities", [])
+            critical_vulns = [
+                v
+                for v in vulnerabilities
+                if isinstance(v, dict) and v.get("severity") == "CRITICAL"
+            ]
+
+            if critical_vulns:
+                # BLOCK deployment on Critical vulnerabilities
+                security_blocks_total.labels(
+                    scan_type="kubesec",
+                    severity="CRITICAL",
+                ).inc()
+
+                env.status = ShadowStatus.FAILED
+                env.error = f"Blocked: {len(critical_vulns)} CRITICAL vulnerabilities detected"
+                env.logs.append(
+                    f"❌ SECURITY BLOCK: {len(critical_vulns)} Critical vulnerabilities"
+                )
+
+                for vuln in critical_vulns[:3]:  # Log first 3
+                    env.logs.append(
+                        f"  - {vuln.get('id', 'Unknown')}: {vuln.get('description', 'N/A')}"
+                    )
+
+                security_results["passed"] = False
+                security_results["blocked"] = True
+                log.error(
+                    "security_gate_blocked",
+                    shadow_id=env.id,
+                    critical_vulns=len(critical_vulns),
+                    scan_type="kubesec",
+                )
+                return False
+
+            # Non-critical failures - warn but allow
+            env.logs.append("⚠️  Kubesec scan had non-critical issues")
+            log.warning("kubesec_scan_warnings", shadow_id=env.id)
             return True
 
-        security_results["passed"] = False
-        env.logs.append("Kubesec scan failed")
-        return False
+        env.logs.append("✅ Kubesec scan passed")
+        return True
 
     async def _run_verification_tests(
         self,
@@ -595,6 +729,21 @@ class ShadowManager:
         security_results: dict[str, Any],
         verification_started_at: datetime,
     ) -> bool:
+        # Post-deploy Kubesec scan on deployed resources
+        deployed_manifests = await self._fetch_deployed_manifests(
+            env,
+            apps_api=shadow_clients.apps,
+            core_api=shadow_clients.core,
+        )
+        if deployed_manifests:
+            kubesec_postdeploy = await security_pipeline.scan_manifests(deployed_manifests)
+            security_results["kubesec_postdeploy"] = kubesec_postdeploy
+            if not kubesec_postdeploy.get("passed", True):
+                security_results["passed"] = False
+                env.logs.append("Post-deploy Kubesec scan failed")
+            else:
+                env.logs.append("Post-deploy Kubesec scan passed")
+
         images = await self._resolve_images_for_resource(
             env,
             apps_api=shadow_clients.apps,
@@ -626,6 +775,62 @@ class ShadowManager:
 
         return bool(security_results["passed"])
 
+    async def _fetch_deployed_manifests(
+        self,
+        env: ShadowEnvironment,
+        apps_api: client.AppsV1Api,
+        core_api: client.CoreV1Api,
+    ) -> list[str]:
+        """Fetch deployed resources from shadow and serialize to valid YAML manifests.
+
+        Returns properly formatted Kubernetes manifests with apiVersion, kind, metadata, and spec.
+        """
+        manifests: list[str] = []
+
+        try:
+            # Fetch deployment
+            deployment = await self._call_api(
+                apps_api.read_namespaced_deployment,
+                env.source_resource,
+                env.namespace,
+            )
+            if deployment:
+                manifest_dict = {
+                    "apiVersion": "apps/v1",
+                    "kind": "Deployment",
+                    "metadata": {
+                        "name": deployment.metadata.name,
+                        "namespace": deployment.metadata.namespace,
+                    },
+                    "spec": client.ApiClient().sanitize_for_serialization(deployment.spec),
+                }
+                manifests.append(yaml.safe_dump(manifest_dict))
+        except ApiException as e:
+            log.warning("failed_to_fetch_deployment", error=str(e))
+
+        try:
+            # Fetch services matching the deployment
+            services = await self._call_api(
+                core_api.list_namespaced_service,
+                env.namespace,
+            )
+            for service in services.items or []:
+                if service.metadata and service.spec:
+                    manifest_dict = {
+                        "apiVersion": "v1",
+                        "kind": "Service",
+                        "metadata": {
+                            "name": service.metadata.name,
+                            "namespace": service.metadata.namespace,
+                        },
+                        "spec": client.ApiClient().sanitize_for_serialization(service.spec),
+                    }
+                    manifests.append(yaml.safe_dump(manifest_dict))
+        except ApiException as e:
+            log.warning("failed_to_fetch_services", error=str(e))
+
+        return manifests
+
     async def _store_verification_results(
         self,
         *,
@@ -650,11 +855,7 @@ class ShadowManager:
         }
 
     async def cleanup(self, shadow_id: str) -> None:
-        """Cleanup shadow environment.
-
-        Args:
-            shadow_id: ID of the shadow environment to cleanup
-        """
+        """Cleanup shadow environment."""
         env = self.get_environment(shadow_id)
         if not env:
             log.warning("shadow_not_found", shadow_id=shadow_id)
@@ -665,16 +866,35 @@ class ShadowManager:
         env.logs.append("Cleaning up shadow environment")
 
         try:
+            # Kill port-forward process if exists
+            if hasattr(env, "_port_forward_proc") and env._port_forward_proc:
+                try:
+                    proc = env._port_forward_proc
+                    if proc.returncode is None:
+                        # Try terminate first
+                        proc.terminate()
+                        try:
+                            # Wait with timeout
+                            await asyncio.wait_for(proc.wait(), timeout=5.0)
+                        except (TimeoutError, Exception):
+                            # Force kill if timeout or error
+                            try:
+                                proc.kill()
+                                await proc.wait()
+                            except Exception:
+                                pass
+                    log.debug("port_forward_cleaned_up", shadow_id=shadow_id)
+                except Exception as e:
+                    log.warning("port_forward_cleanup_failed", error=str(e))
+
             if env.runtime == SandBoxRuntime.VCLUSTER.value:
                 await self._delete_vcluster(env)
             else:
-                # Delete namespace (cascades to all resources)
                 await self._delete_namespace(env.namespace)
             env.status = ShadowStatus.DELETED
             await self._update_shadow_status(env)
             log.info("shadow_cleaned", shadow_id=shadow_id)
 
-            # Decrement active shadow counter
             shadow_environments_active.labels(runtime=self.runtime).dec()
 
         except Exception as e:
@@ -897,13 +1117,13 @@ class ShadowManager:
         else:
             config.load_kube_config(
                 config_file=kubeconfig_path,
-                context=context or settings.kubernetes.context,
+                context=context,  # Don't fall back to settings.kubernetes.context
                 client_configuration=config_obj,
             )
             log.info(
                 "k8s_config_loaded",
                 mode="kubeconfig",
-                context=context or settings.kubernetes.context,
+                context=context,
             )
         return client.ApiClient(config_obj)
 
@@ -947,15 +1167,10 @@ class ShadowManager:
         return shadow_clients
 
     async def _write_vcluster_kubeconfig(self, name: str, namespace: str) -> str:
-        """Fetch vCluster kubeconfig and persist it to a temp file.
-
-        Uses the kubeconfig secret when available to avoid localhost-only configs,
-        then rewrites the server to the host API proxy so the config works from
-        outside the cluster.
-        """
+        """Fetch vCluster kubeconfig and persist it to a temp file."""
         kubeconfig = None
 
-        # Try to get kubeconfig from secret with retries (secret creation may lag)
+        # Try to get kubeconfig from secret with retries
         for attempt in range(VCLUSTER_KUBECONFIG_SECRET_MAX_ATTEMPTS):
             try:
                 kubeconfig = await self._get_vcluster_kubeconfig_from_secret(name, namespace)
@@ -1135,7 +1350,6 @@ class ShadowManager:
                 cluster_config["insecure-skip-tls-verify"] = True
 
         # vCluster typically runs on HTTPS - use https: prefix in service proxy URL
-        # Format: /api/v1/namespaces/{ns}/services/https:{svc-name}:{port}/proxy
         protocol = "https" if service_port in (443, 8443) else "http"
         proxy_server = (
             f"{host_server.rstrip('/')}"
@@ -1350,6 +1564,20 @@ class ShadowManager:
     async def _best_effort_cleanup(self, env: ShadowEnvironment) -> None:
         """Attempt cleanup after a failed shadow creation."""
         try:
+            # Kill port-forward process if exists
+            if hasattr(env, "_port_forward_proc") and env._port_forward_proc:
+                try:
+                    if env._port_forward_proc.returncode is None:
+                        env._port_forward_proc.terminate()
+                        # Use timeout to avoid hanging
+                        try:
+                            await asyncio.wait_for(env._port_forward_proc.wait(), timeout=5.0)
+                        except TimeoutError:
+                            env._port_forward_proc.kill()
+                            await env._port_forward_proc.wait()
+                except Exception:
+                    pass
+
             if env.runtime == SandBoxRuntime.VCLUSTER.value:
                 await self._delete_vcluster(env)
             else:
@@ -1366,14 +1594,7 @@ class ShadowManager:
         timeout_seconds: int = 300,
         poll_interval: float = 3.0,
     ) -> None:
-        """Wait for vCluster Deployment/StatefulSet and Service to be created and ready.
-
-        Args:
-            shadow_name: Name of the vCluster
-            namespace: Host namespace where vCluster is deployed
-            timeout_seconds: Maximum time to wait for resources
-            poll_interval: Seconds between checks
-        """
+        """Wait for vCluster Deployment/StatefulSet and Service to be created and ready."""
         start = time.monotonic()
         workload_ready = False
         service_ready = False
@@ -1531,10 +1752,7 @@ class ShadowManager:
         shadow_name: str,
         namespace: str,
     ) -> str:
-        """Diagnose why a vCluster failed to become ready.
-
-        Returns detailed diagnostic information about pod status, events, and resource constraints.
-        """
+        """Diagnose why a vCluster failed to become ready."""
         diagnostics: list[str] = []
 
         try:
@@ -1627,15 +1845,7 @@ class ShadowManager:
         return "\n".join(diagnostics) if diagnostics else "No diagnostic information available"
 
     async def _check_cluster_resources(self) -> dict[str, Any]:
-        """Check if cluster has sufficient resources for vCluster creation.
-
-        Returns:
-            Dictionary with resource availability information:
-            - sufficient: bool indicating if resources are adequate
-            - available_cpu: Total allocatable CPU across nodes
-            - available_memory: Total allocatable memory across nodes
-            - node_count: Number of nodes in cluster
-        """
+        """Check if cluster has sufficient resources for vCluster creation."""
         try:
             nodes = await self._call_api(self._core_api.list_node)
 
@@ -1665,7 +1875,7 @@ class ShadowManager:
                 else:
                     total_cpu += float(cpu_str)
 
-                # Parse Memory (e.g., "8Gi", "8192Mi", "8589934592")
+                # Parse Memory
                 memory_str = allocatable.get("memory", "0")
                 total_memory_bytes += self._parse_memory_to_bytes(memory_str)
 
@@ -1686,7 +1896,6 @@ class ShadowManager:
 
         except ApiException as exc:
             log.warning("cluster_resource_check_failed", error=str(exc))
-            # Assume sufficient if check fails to not block creation
             return {
                 "sufficient": True,
                 "available_cpu": "unknown",
@@ -1697,10 +1906,6 @@ class ShadowManager:
 
     @staticmethod
     def _parse_memory_to_bytes(memory_str: str) -> int:
-        """Parse Kubernetes memory format to bytes.
-
-        Supports: Ki, Mi, Gi, Ti, Pi, Ei (IEC binary) and k, M, G, T, P, E (SI decimal)
-        """
         if not memory_str:
             return 0
 
@@ -1727,7 +1932,6 @@ class ShadowManager:
                 except ValueError:
                     return 0
 
-        # No unit, assume bytes
         try:
             return int(memory_str)
         except ValueError:
@@ -1735,7 +1939,6 @@ class ShadowManager:
 
     @staticmethod
     def _format_bytes(bytes_value: int) -> str:
-        """Format bytes to human-readable format."""
         BYTES_PER_UNIT = 1024  # noqa: N806
         value = float(bytes_value)
         for unit in ["", "Ki", "Mi", "Gi", "Ti", "Pi"]:
@@ -1748,23 +1951,14 @@ class ShadowManager:
         self,
         core_api: client.CoreV1Api,
         shadow_id: str,
-        timeout_seconds: int = 120,
+        timeout_seconds: int = 300,
         poll_interval: float = 3.0,
     ) -> None:
-        """Wait for vCluster API server to become reachable.
-
-        Args:
-            core_api: CoreV1Api client configured for the vCluster
-            shadow_id: Shadow environment ID for logging
-            timeout_seconds: Maximum time to wait for API to be ready
-            poll_interval: Seconds between connectivity checks
-        """
         start = time.monotonic()
         last_error: OSError | ApiException | None = None
 
         while time.monotonic() - start < timeout_seconds:
             try:
-                # Attempt a simple API call to verify connectivity
                 await self._call_api(core_api.list_namespace, limit=1)
             except (OSError, ApiException) as e:
                 last_error = e
@@ -1812,16 +2006,15 @@ class ShadowManager:
             api = core_api or self._core_api
             await self._call_api(api.create_namespace, namespace)
         except ApiException as e:
-            if e.status != HTTP_CONFLICT:  # Already exists is OK
+            if e.status != HTTP_CONFLICT:
                 raise
 
     async def _delete_namespace(self, name: str, core_api: client.CoreV1Api | None = None) -> None:
-        """Delete shadow namespace."""
         try:
             api = core_api or self._core_api
             await self._call_api(api.delete_namespace, name)
         except ApiException as e:
-            if e.status != HTTP_NOT_FOUND:  # Not found is OK
+            if e.status != HTTP_NOT_FOUND:
                 raise
 
     async def _clone_resource(
@@ -1837,7 +2030,6 @@ class ShadowManager:
     ) -> None:
         """Clone a resource to the shadow namespace."""
         if source_kind.lower() == "deployment":
-            # Get source deployment
             source_deployment = cast(
                 client.V1Deployment,
                 await self._call_api(
@@ -1848,7 +2040,6 @@ class ShadowManager:
             )
             deployment = copy.deepcopy(source_deployment)
 
-            # Prepare for cloning
             if deployment.metadata is None:
                 deployment.metadata = client.V1ObjectMeta()
             deployment.metadata.namespace = target_namespace
@@ -1860,7 +2051,6 @@ class ShadowManager:
             deployment.metadata.finalizers = None
             deployment.metadata.generation = None
 
-            # Add shadow label
             if not deployment.metadata.labels:
                 deployment.metadata.labels = {}
             deployment.metadata.labels["aegis.io/shadow"] = "true"
@@ -1868,14 +2058,44 @@ class ShadowManager:
             deployment.metadata.labels["aegis.io/source-name"] = source_name
             deployment.metadata.labels["aegis.io/source-kind"] = "Deployment"
 
-            # Create in shadow namespace
+            # CRITICAL FIX: Replace non-existent or test images with fallback
+            # This prevents shadow pods from failing due to ImagePullBackOff
+            # when testing fixes for OTHER issues (like OOM) on deployments
+            # that happen to have invalid images from incident test scenarios
+            if (
+                deployment.spec
+                and deployment.spec.template
+                and deployment.spec.template.spec
+                and deployment.spec.template.spec.containers
+            ):
+                for container in deployment.spec.template.spec.containers:
+                    if container.image and (
+                        "nonexistent" in container.image.lower()
+                        or "imagepullbackoff" in container.image.lower()
+                    ):
+                        log.warning(
+                            "shadow_replacing_bad_image",
+                            container=container.name,
+                            original_image=container.image,
+                            fallback_image=FALLBACK_IMAGE,
+                        )
+                        container.image = FALLBACK_IMAGE
+
             await self._call_api(
                 target_apps_api.create_namespaced_deployment,
                 target_namespace,
                 deployment,
             )
 
-            # Clone matching services into shadow namespace
+            # Clone ConfigMaps and Secrets referenced by the deployment
+            await self._clone_configmaps_and_secrets(
+                source_namespace=source_namespace,
+                target_namespace=target_namespace,
+                deployment=deployment,
+                source_core_api=source_core_api,
+                target_core_api=target_core_api,
+            )
+
             await self._clone_services_for_deployment(
                 source_namespace=source_namespace,
                 target_namespace=target_namespace,
@@ -1885,7 +2105,6 @@ class ShadowManager:
             )
 
         elif source_kind.lower() == "pod":
-            # For standalone pods, create a deployment wrapper
             pod = cast(
                 client.V1Pod,
                 await self._call_api(
@@ -1898,12 +2117,25 @@ class ShadowManager:
             if pod_spec and pod_spec.restart_policy and pod_spec.restart_policy != "Always":
                 pod_spec.restart_policy = "Always"
 
+            if pod_spec and pod_spec.containers:
+                for container in pod_spec.containers:
+                    if container.image and (
+                        "nonexistent" in container.image.lower()
+                        or "imagepullbackoff" in container.image.lower()
+                    ):
+                        log.warning(
+                            "shadow_replacing_bad_image",
+                            container=container.name,
+                            original_image=container.image,
+                            fallback_image=FALLBACK_IMAGE,
+                        )
+                        container.image = FALLBACK_IMAGE
+
             base_labels = pod.metadata.labels if pod.metadata and pod.metadata.labels else {}
             base_labels = copy.deepcopy(base_labels)
             base_labels.setdefault("app", source_name)
             base_labels["aegis.io/shadow"] = "true"
 
-            # Create deployment from pod spec
             deployment = client.V1Deployment(
                 metadata=client.V1ObjectMeta(
                     name=source_name,
@@ -1931,7 +2163,15 @@ class ShadowManager:
                 deployment,
             )
 
-            # Clone matching services into shadow namespace
+            # Clone ConfigMaps and Secrets before Services
+            await self._clone_configmaps_and_secrets(
+                source_namespace=source_namespace,
+                target_namespace=target_namespace,
+                deployment=deployment,
+                source_core_api=source_core_api,
+                target_core_api=target_core_api,
+            )
+
             await self._clone_services_for_deployment(
                 source_namespace=source_namespace,
                 target_namespace=target_namespace,
@@ -1969,9 +2209,29 @@ class ShadowManager:
             await self._call_api(source_core_api.list_namespaced_service, source_namespace),
         )
 
+        log.info(
+            "shadow_cloning_services",
+            source_namespace=source_namespace,
+            target_namespace=target_namespace,
+            pod_labels=pod_labels,
+            services_found=len(services.items or []),
+        )
+
         for service in services.items or []:
             selector = service.spec.selector if service.spec else None
-            if not selector or not all(pod_labels.get(k) == v for k, v in selector.items()):
+            svc_name = service.metadata.name if service.metadata else "unknown"
+
+            if not selector:
+                log.debug("shadow_service_no_selector", service=svc_name)
+                continue
+
+            if not all(pod_labels.get(k) == v for k, v in selector.items()):
+                log.debug(
+                    "shadow_service_selector_mismatch",
+                    service=svc_name,
+                    selector=selector,
+                    pod_labels=pod_labels,
+                )
                 continue
 
             cloned = copy.deepcopy(service)
@@ -1989,17 +2249,31 @@ class ShadowManager:
             if cloned.metadata.labels is None:
                 cloned.metadata.labels = {}
             cloned.metadata.labels["aegis.io/shadow"] = "true"
+            cloned.metadata.labels["aegis.io/shadow-clone"] = (
+                "true"  # For vCluster service replication
+            )
             cloned.metadata.labels["aegis.io/source-namespace"] = source_namespace
             cloned.metadata.labels["aegis.io/source-name"] = (
                 deployment.metadata.name if deployment.metadata else ""
             )
 
             if cloned.spec:
-                cloned.spec.cluster_ip = None
-                cloned.spec.cluster_ips = None
-                cloned.spec.type = "ClusterIP"
-                for port in cloned.spec.ports or []:
-                    port.node_port = None
+                # Serialize to dict, remove immutable fields, reconstruct
+                api_client = client.ApiClient()
+                spec_dict = api_client.sanitize_for_serialization(cloned.spec)
+
+                # Remove immutable fields that cause 422 errors in vCluster
+                spec_dict.pop("clusterIP", None)
+                spec_dict.pop("clusterIPs", None)
+                spec_dict.pop("externalTrafficPolicy", None)  # Invalid for ClusterIP
+                spec_dict["type"] = "ClusterIP"
+
+                # Remove node_port from all ports
+                for port in spec_dict.get("ports", []):
+                    port.pop("nodePort", None)
+
+                # Reconstruct spec from cleaned dict
+                cloned.spec = api_client._ApiClient__deserialize(spec_dict, "V1ServiceSpec")
 
             try:
                 await self._call_api(
@@ -2020,6 +2294,200 @@ class ShadowManager:
                         error=str(e),
                     )
 
+    async def _clone_configmaps_and_secrets(
+        self,
+        source_namespace: str,
+        target_namespace: str,
+        deployment: client.V1Deployment,
+        source_core_api: client.CoreV1Api,
+        target_core_api: client.CoreV1Api,
+    ) -> None:
+        """Clone ConfigMaps and Secrets referenced by deployment pods."""
+        if not deployment.spec or not deployment.spec.template or not deployment.spec.template.spec:
+            return
+
+        pod_spec = deployment.spec.template.spec
+        referenced_configmaps: set[str] = set()
+        referenced_secrets: set[str] = set()
+
+        # Extract ConfigMap references from volumes
+        for volume in pod_spec.volumes or []:
+            if volume.config_map and volume.config_map.name:
+                referenced_configmaps.add(volume.config_map.name)
+            if volume.secret and volume.secret.secret_name:
+                referenced_secrets.add(volume.secret.secret_name)
+
+        # Extract ConfigMap and Secret references from env/envFrom
+        for container in pod_spec.containers or []:
+            for env in container.env or []:
+                if env.value_from:
+                    if env.value_from.config_map_key_ref:
+                        referenced_configmaps.add(env.value_from.config_map_key_ref.name)
+                    if env.value_from.secret_key_ref:
+                        referenced_secrets.add(env.value_from.secret_key_ref.name)
+
+            for env_from in container.env_from or []:
+                if env_from.config_map_ref and env_from.config_map_ref.name:
+                    referenced_configmaps.add(env_from.config_map_ref.name)
+                if env_from.secret_ref and env_from.secret_ref.name:
+                    referenced_secrets.add(env_from.secret_ref.name)
+
+        # Clone ConfigMaps
+        for cm_name in referenced_configmaps:
+            try:
+                source_cm = await self._call_api(
+                    source_core_api.read_namespaced_config_map,
+                    cm_name,
+                    source_namespace,
+                )
+
+                cloned_cm = copy.deepcopy(source_cm)
+                if cloned_cm.metadata:
+                    cloned_cm.metadata.namespace = target_namespace
+                    cloned_cm.metadata.resource_version = None
+                    cloned_cm.metadata.uid = None
+                    cloned_cm.metadata.creation_timestamp = None
+                    cloned_cm.metadata.managed_fields = None
+                    cloned_cm.metadata.owner_references = None
+
+                    if cloned_cm.metadata.labels is None:
+                        cloned_cm.metadata.labels = {}
+                    cloned_cm.metadata.labels["aegis.io/shadow"] = "true"
+
+                await self._call_api(
+                    target_core_api.create_namespaced_config_map,
+                    target_namespace,
+                    cloned_cm,
+                )
+                log.info("shadow_configmap_cloned", configmap=cm_name, namespace=target_namespace)
+            except ApiException as e:
+                if e.status != HTTP_CONFLICT:
+                    log.warning("shadow_configmap_clone_failed", configmap=cm_name, error=str(e))
+
+        # Clone Secrets
+        for secret_name in referenced_secrets:
+            try:
+                source_secret = await self._call_api(
+                    source_core_api.read_namespaced_secret,
+                    secret_name,
+                    source_namespace,
+                )
+
+                cloned_secret = copy.deepcopy(source_secret)
+                if cloned_secret.metadata:
+                    cloned_secret.metadata.namespace = target_namespace
+                    cloned_secret.metadata.resource_version = None
+                    cloned_secret.metadata.uid = None
+                    cloned_secret.metadata.creation_timestamp = None
+                    cloned_secret.metadata.managed_fields = None
+                    cloned_secret.metadata.owner_references = None
+
+                    if cloned_secret.metadata.labels is None:
+                        cloned_secret.metadata.labels = {}
+                    cloned_secret.metadata.labels["aegis.io/shadow"] = "true"
+
+                await self._call_api(
+                    target_core_api.create_namespaced_secret,
+                    target_namespace,
+                    cloned_secret,
+                )
+                log.info("shadow_secret_cloned", secret=secret_name, namespace=target_namespace)
+            except ApiException as e:
+                if e.status != HTTP_CONFLICT:
+                    log.warning("shadow_secret_clone_failed", secret=secret_name, error=str(e))
+
+    @staticmethod
+    def _deep_merge(base: dict[str, Any], updates: dict[str, Any]) -> dict[str, Any]:
+        """Deep merge updates into base dict.
+
+        Args:
+            base: Base dictionary
+            updates: Updates to merge
+
+        Returns:
+            Merged dictionary
+        """
+        result = base.copy()
+
+        for key, value in updates.items():
+            if key in result and isinstance(result[key], dict) and isinstance(value, dict):
+                result[key] = ShadowManager._deep_merge(result[key], value)
+            else:
+                result[key] = value
+
+        return result
+
+    async def _complete_manifest(
+        self,
+        partial_manifest: dict[str, Any],
+        resource_type: str,
+        resource_name: str,
+        namespace: str,
+        apps_api: client.AppsV1Api,
+    ) -> dict[str, Any]:
+        """Complete a partial manifest by fetching existing resource and merging changes.
+
+        Args:
+            partial_manifest: LLM-generated patch with only changed fields
+            resource_type: "Deployment", "Service", etc.
+            resource_name: Name of the resource
+            namespace: Kubernetes namespace
+            apps_api: API client
+
+        Returns:
+            Complete, valid manifest
+        """
+        # Fetch existing resource
+        if resource_type.lower() == "deployment":
+            existing = await self._call_api(
+                apps_api.read_namespaced_deployment,
+                resource_name,
+                namespace,
+            )
+        else:
+            # For now, only handle Deployments (most common case)
+            log.warning(
+                "manifest_completion_unsupported_type",
+                resource_type=resource_type,
+                fallback="returning partial manifest",
+            )
+            return partial_manifest
+
+        # Convert to dict
+        api_client = client.ApiClient()
+        existing_dict = api_client.sanitize_for_serialization(existing)
+
+        # Remove server-managed fields
+        metadata = existing_dict.get("metadata", {})
+        for field_name in [
+            "uid",
+            "resourceVersion",
+            "generation",
+            "creationTimestamp",
+            "managedFields",
+            "selfLink",
+        ]:
+            metadata.pop(field_name, None)
+        existing_dict.pop("status", None)
+
+        # Deep merge partial_manifest into existing_dict
+        merged = self._deep_merge(existing_dict, partial_manifest)
+
+        # Ensure required fields exist
+        if "apiVersion" not in merged:
+            merged["apiVersion"] = "apps/v1"
+        if "kind" not in merged:
+            merged["kind"] = "Deployment"
+
+        log.info(
+            "manifest_completed",
+            resource=f"{resource_type}/{resource_name}",
+            had_selector=bool(partial_manifest.get("spec", {}).get("selector")),
+            now_has_selector=bool(merged.get("spec", {}).get("selector")),
+        )
+
+        return merged
+
     async def _apply_changes(
         self,
         env: ShadowEnvironment,
@@ -2030,48 +2498,154 @@ class ShadowManager:
         if not changes:
             return
 
-        # Apply manifest-based changes first (e.g., ConfigMaps, Secrets, Deployments)
         manifests = changes.get("manifests")
         if manifests:
-            await self._apply_manifest_bundle(env, manifests)
+            # Complete partial manifests from LLM
+            completed_manifests = await self._complete_partial_manifests(manifests, env, apps_api)
 
-        # Normalize kubectl command changes into structured patches
-        command_changes = self._extract_command_changes(changes.get("commands", []), env)
-        self._merge_command_changes(changes, command_changes)
+            valid_manifests = self._normalize_manifests(completed_manifests)
+            if valid_manifests:
+                await self._apply_manifest_bundle(env, valid_manifests)
+            else:
+                log.warning("shadow_manifests_empty_skipping", shadow_id=env.id)
 
-        deployment = cast(
-            client.V1Deployment,
-            await self._call_api(
-                apps_api.read_namespaced_deployment,
-                env.source_resource,
-                env.namespace,
-            ),
-        )
-        container_name = self._resolve_container_name(deployment, changes)
-        patch = self._build_deployment_patch(
-            changes=changes,
-            container_name=container_name,
-            resource_name=env.source_resource,
-        )
-        if not patch:
-            return
+        commands = changes.get("commands")
+        if commands:
+            await self._execute_shadow_commands(env, commands)
 
-        try:
-            await self._call_api(
-                apps_api.patch_namespaced_deployment,
-                env.source_resource,
-                env.namespace,
-                patch,
-            )
-        except ApiException as e:
-            log.warning("shadow_patch_failed", error=str(e))
+    async def _complete_partial_manifests(
+        self,
+        manifests: dict[str, str] | list[str] | str,
+        env: ShadowEnvironment,
+        apps_api: client.AppsV1Api,
+    ) -> dict[str, str] | list[str] | str:
+        """Complete partial manifests by merging with existing resources.
+
+        Args:
+            manifests: Raw manifests from Solution Agent (may be patches)
+            env: Shadow environment
+            apps_api: API client
+
+        Returns:
+            Completed manifests (same structure as input)
+        """
+        # Normalize to list for processing
+        if isinstance(manifests, dict):
+            manifest_list = list(manifests.values())
+            return_dict = True
+            keys = list(manifests.keys())
+        elif isinstance(manifests, list):
+            manifest_list = manifests
+            return_dict = False
+            keys = []
+        else:
+            manifest_list = [manifests]
+            return_dict = False
+            keys = []
+
+        completed = []
+        for manifest_str in manifest_list:
+            if not manifest_str or not manifest_str.strip():
+                completed.append(manifest_str)
+                continue
+
+            try:
+                docs = list(yaml.safe_load_all(manifest_str))
+                completed_docs = []
+
+                for doc in docs:
+                    if not isinstance(doc, dict):
+                        completed_docs.append(doc)
+                        continue
+
+                    # Check if manifest is incomplete (missing selector for Deployment)
+                    if doc.get("kind") == "Deployment":
+                        spec = doc.get("spec", {})
+                        if not spec.get("selector"):
+                            log.info(
+                                "completing_partial_deployment",
+                                resource=env.source_resource,
+                                namespace=env.namespace,
+                            )
+                            # Complete the manifest
+                            completed_doc = await self._complete_manifest(
+                                partial_manifest=doc,
+                                resource_type="Deployment",
+                                resource_name=env.source_resource,
+                                namespace=env.namespace,
+                                apps_api=apps_api,
+                            )
+                            completed_docs.append(completed_doc)
+                        else:
+                            # Already complete
+                            completed_docs.append(doc)
+                    else:
+                        # Not a Deployment, pass through
+                        completed_docs.append(doc)
+
+                # Convert back to YAML
+                completed_yaml = yaml.dump_all(completed_docs, default_flow_style=False)
+                completed.append(completed_yaml)
+
+            except Exception as e:
+                log.warning(
+                    "manifest_completion_failed",
+                    error=str(e),
+                    fallback="using original manifest",
+                )
+                completed.append(manifest_str)
+
+        # Return in same structure as input
+        if return_dict:
+            return dict(zip(keys, completed))
+        if isinstance(manifests, list):
+            return completed
+        return completed[0] if completed else ""
+
+    @staticmethod
+    def _normalize_manifests(
+        manifests: dict[str, str] | list[str] | str,
+    ) -> list[str]:
+        if isinstance(manifests, dict):
+            values = list(manifests.values())
+        elif isinstance(manifests, list):
+            values = manifests
+        else:
+            values = [manifests]
+
+        valid: list[str] = []
+        for item in values:
+            if not item or not item.strip():
+                continue
+            # Validate Deployment manifests have required spec.selector
+            # Skip incomplete patches that would fail kubectl apply
+            try:
+                docs = list(yaml.safe_load_all(item))
+                skip = False
+                for doc in docs:
+                    if not isinstance(doc, dict):
+                        continue
+                    if doc.get("kind") == "Deployment":
+                        spec = doc.get("spec", {})
+                        if not spec.get("selector"):
+                            log.warning(
+                                "skipping_invalid_deployment_manifest",
+                                reason="missing spec.selector",
+                            )
+                            skip = True
+                            break
+                if not skip:
+                    valid.append(item)
+            except Exception:
+                # If YAML parsing fails, skip this manifest
+                log.warning("manifest_yaml_parse_failed", manifest=item[:100])
+        return valid
 
     @staticmethod
     def _merge_command_changes(
         changes: dict[str, Any],
         command_changes: dict[str, Any],
     ) -> None:
-        """Merge parsed kubectl command changes into the change set."""
         if not command_changes:
             return
         merged_env = {**changes.get("env", {}), **command_changes.get("env", {})}
@@ -2086,7 +2660,6 @@ class ShadowManager:
         deployment: client.V1Deployment,
         changes: dict[str, Any],
     ) -> str | None:
-        """Pick target container name for patching."""
         container_name = changes.get("container") or changes.get("container_name")
         if isinstance(container_name, str) and container_name:
             return container_name
@@ -2105,7 +2678,6 @@ class ShadowManager:
         container_name: str | None,
         resource_name: str,
     ) -> dict[str, Any] | None:
-        """Build a deployment patch for replicas, image, and env updates."""
         patch: dict[str, Any] = {"spec": {}}
         template_patch: dict[str, Any] = {"spec": {}}
         container_patch: dict[str, Any] = {}
@@ -2120,10 +2692,31 @@ class ShadowManager:
             else:
                 log.warning("shadow_patch_no_container", change="image", resource=resource_name)
 
+        # Handle resource adjustments (memory/CPU limits) separately
+        # CRITICAL: Resource adjustments should NEVER modify the container image
+        # Only include the resources field, not the entire container spec
+        if "resources" in changes and isinstance(changes["resources"], dict):
+            if container_name:
+                if "name" not in container_patch:
+                    container_patch["name"] = container_name
+                # ONLY set resources, explicitly exclude image to prevent corruption
+                container_patch["resources"] = changes["resources"]
+                # Ensure we're not accidentally including image from changes
+                if "image" in container_patch and "image" not in changes:
+                    del container_patch["image"]
+                log.info(
+                    "shadow_resource_adjustment",
+                    container=container_name,
+                    resources=changes["resources"],
+                )
+            else:
+                log.warning("shadow_patch_no_container", change="resources", resource=resource_name)
+
         if "env" in changes and isinstance(changes["env"], dict):
             env_updates = [{"name": key, "value": value} for key, value in changes["env"].items()]
             if container_name:
-                container_patch["name"] = container_name
+                if "name" not in container_patch:
+                    container_patch["name"] = container_name
                 container_patch["env"] = env_updates
             else:
                 log.warning("shadow_patch_no_container", change="env", resource=resource_name)
@@ -2143,7 +2736,6 @@ class ShadowManager:
         env: ShadowEnvironment,
         manifests: dict[str, str] | list[str] | str,
     ) -> None:
-        """Apply YAML manifests to the shadow cluster using kubectl when available."""
         if not env.kubeconfig_path:
             log.warning("shadow_manifest_missing_kubeconfig", shadow_id=env.id)
             return
@@ -2154,11 +2746,15 @@ class ShadowManager:
         kubeconfig_path = env.kubeconfig_path
 
         if isinstance(manifests, dict):
-            manifest_blob = "\n---\n".join(manifests.values())
+            manifest_blob = "\n---\n".join(
+                [value for value in manifests.values() if value and value.strip()]
+            )
         elif isinstance(manifests, list):
-            manifest_blob = "\n---\n".join(manifests)
+            manifest_blob = "\n---\n".join(
+                [value for value in manifests if value and value.strip()]
+            )
         else:
-            manifest_blob = manifests
+            manifest_blob = manifests.strip()
 
         if not manifest_blob.strip():
             return
@@ -2179,20 +2775,87 @@ class ShadowManager:
         _stdout, stderr = await process.communicate(input=manifest_blob.encode())
         if process.returncode != 0:
             stderr_text = stderr.decode(errors="replace").strip() if stderr else ""
-            log.warning(
-                "shadow_manifest_apply_failed",
-                shadow_id=env.id,
-                stderr=stderr_text[:500],
-            )
+            if "no objects passed to apply" not in stderr_text.lower():
+                log.warning(
+                    "shadow_manifest_apply_failed",
+                    shadow_id=env.id,
+                    stderr=stderr_text[:500],
+                )
         else:
             log.info("shadow_manifest_applied", shadow_id=env.id)
+
+    async def _execute_shadow_commands(
+        self,
+        env: ShadowEnvironment,
+        commands: list[str],
+    ) -> None:
+        """Execute kubectl commands directly against the shadow environment."""
+        if not env.kubeconfig_path:
+            log.error("shadow_command_exec_no_kubeconfig", shadow_id=env.id)
+            return
+
+        kubectl_path = shutil.which("kubectl")
+        if not kubectl_path:
+            log.warning("shadow_command_kubectl_missing", shadow_id=env.id)
+            return
+
+        for command in commands:
+            if not command or "kubectl" not in command:
+                continue
+
+            try:
+                parts = shlex.split(command)
+            except ValueError:
+                log.warning("shadow_command_parse_failed", shadow_id=env.id, command=command)
+                continue
+
+            if not parts or parts[0] != "kubectl":
+                continue
+
+            cmd_args = parts[1:]
+            final_cmd = [kubectl_path, "--kubeconfig", env.kubeconfig_path]
+            if "-n" not in cmd_args and "--namespace" not in cmd_args:
+                final_cmd.extend(["-n", env.namespace])
+            final_cmd.extend(cmd_args)
+
+            log.info(
+                "executing_shadow_command",
+                command=" ".join(final_cmd),
+                shadow_id=env.id,
+                namespace=env.namespace,
+            )
+
+            try:
+                process = await asyncio.create_subprocess_exec(
+                    *final_cmd,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                )
+                _stdout, stderr = await process.communicate()
+            except Exception as e:
+                log.warning("shadow_command_execution_error", command=command, error=str(e))
+                continue
+
+            if process.returncode != 0:
+                stderr_text = stderr.decode(errors="replace").strip() if stderr else ""
+                log.warning(
+                    "shadow_command_failed",
+                    command=command,
+                    stderr=stderr_text[:500],
+                )
+            else:
+                log.info(
+                    "shadow_command_succeeded",
+                    command=command,
+                    shadow_id=env.id,
+                    namespace=env.namespace,
+                )
 
     def _extract_command_changes(
         self,
         commands: Iterable[str],
         env: ShadowEnvironment,
     ) -> dict[str, Any]:
-        """Extract structured changes from kubectl commands."""
         extracted: dict[str, Any] = {}
         for command in commands:
             if not command or "kubectl" not in command:
@@ -2216,7 +2879,6 @@ class ShadowManager:
 
     @staticmethod
     def _clean_kubectl_args(parts: list[str]) -> list[str]:
-        """Remove global kubeconfig/namespace/context args from kubectl commands."""
         cleaned: list[str] = []
         skip_next = False
         for part in parts[1:]:
@@ -2311,10 +2973,19 @@ class ShadowManager:
         self,
         env: ShadowEnvironment,
         apps_api: client.AppsV1Api,
-        timeout_seconds: int = 120,
+        timeout_seconds: int = ROLLOUT_TIMEOUT_SECONDS,
     ) -> None:
-        """Wait for deployment rollout to reach desired availability."""
+        """Wait for deployment rollout to reach desired availability AND service endpoints to be ready."""
+        log.info(
+            "shadow_wait_for_rollout_started",
+            shadow_id=env.id,
+            deployment=env.source_resource,
+            namespace=env.namespace,
+        )
         start = time.monotonic()
+        deployment_ready = False
+
+        # Phase 1: Wait for deployment replicas
         while time.monotonic() - start < timeout_seconds:
             deployment = cast(
                 client.V1Deployment,
@@ -2325,12 +2996,210 @@ class ShadowManager:
                 ),
             )
             desired = deployment.spec.replicas if deployment.spec else 1
-            available = deployment.status.available_replicas if deployment.status else 0
+            available = (deployment.status.available_replicas or 0) if deployment.status else 0
             if available >= (desired or 1):
-                return
+                deployment_ready = True
+                log.info(
+                    "shadow_deployment_ready",
+                    shadow_id=env.id,
+                    deployment=env.source_resource,
+                    available=available,
+                    desired=desired,
+                )
+                break
             await asyncio.sleep(5)
 
-        log.warning("shadow_rollout_timeout", shadow_id=env.id, deployment=env.source_resource)
+        if not deployment_ready:
+            log.warning(
+                "shadow_rollout_timeout",
+                shadow_id=env.id,
+                deployment=env.source_resource,
+                timeout=timeout_seconds,
+            )
+            await self._log_pod_diagnostics(env)
+            return
+
+        # Phase 2: Wait for service endpoints to be populated
+        shadow_clients = self._shadow_clients.get(env.id)
+        if shadow_clients:
+            core_api = shadow_clients.core
+        else:
+            # Fallback: create CoreV1Api from the same client as apps_api
+            log.warning(
+                "shadow_clients_not_cached",
+                shadow_id=env.id,
+                fallback="creating CoreV1Api from apps_api client",
+            )
+            core_api = client.CoreV1Api(api_client=apps_api.api_client)
+
+        endpoint_wait_start = time.monotonic()
+        endpoint_timeout = 60  # Extra 60s for endpoints
+
+        while time.monotonic() - endpoint_wait_start < endpoint_timeout:
+            try:
+                endpoints = await self._call_api(
+                    core_api.read_namespaced_endpoints,
+                    env.source_resource,
+                    env.namespace,
+                )
+                ready_addresses = 0
+                if endpoints and endpoints.subsets:
+                    for subset in endpoints.subsets:
+                        if subset.addresses:
+                            ready_addresses += len(subset.addresses)
+
+                if ready_addresses > 0:
+                    log.info(
+                        "shadow_endpoints_ready",
+                        shadow_id=env.id,
+                        service=env.source_resource,
+                        ready_addresses=ready_addresses,
+                    )
+                    # CRITICAL: Grace period for iptables rules and DNS propagation
+                    log.info(
+                        "shadow_grace_period_start",
+                        shadow_id=env.id,
+                        duration_seconds=10,
+                        reason="iptables/DNS propagation",
+                    )
+                    await asyncio.sleep(10)
+                    log.info("shadow_grace_period_complete", shadow_id=env.id)
+                    return
+
+                log.debug(
+                    "shadow_endpoints_not_ready",
+                    shadow_id=env.id,
+                    service=env.source_resource,
+                )
+            except ApiException as e:
+                if e.status != HTTP_NOT_FOUND:
+                    log.warning("endpoints_check_failed", error=str(e))
+
+            await asyncio.sleep(3)
+
+        log.warning(
+            "shadow_endpoints_timeout",
+            shadow_id=env.id,
+            service=env.source_resource,
+        )
+
+    async def _log_pod_diagnostics(self, env: ShadowEnvironment) -> None:  # noqa: PLR0912
+        """Log detailed pod diagnostics when rollout fails."""
+        try:
+            if not env.kubeconfig_path:
+                log.error("pod_diagnostics_no_kubeconfig", shadow_id=env.id)
+                return
+
+            # Load shadow cluster client
+            shadow_config = client.Configuration()
+            config.load_kube_config(
+                client_configuration=shadow_config, config_file=env.kubeconfig_path
+            )
+            shadow_config.verify_ssl = False
+            core_api = client.CoreV1Api(client.ApiClient(shadow_config))
+
+            # List pods for the deployment
+            pods = await self._call_api(
+                core_api.list_namespaced_pod,
+                env.namespace,
+                label_selector=f"app={env.source_resource}",
+            )
+
+            if not pods or not pods.items:
+                log.warning(
+                    "pod_diagnostics_no_pods", shadow_id=env.id, deployment=env.source_resource
+                )
+                return
+
+            for pod in pods.items:
+                pod_name = pod.metadata.name if pod.metadata else "unknown"
+                phase = pod.status.phase if pod.status else "unknown"
+
+                log.info(
+                    "pod_status",
+                    shadow_id=env.id,
+                    pod=pod_name,
+                    phase=phase,
+                )
+
+                # Log pod conditions
+                if pod.status and pod.status.conditions:
+                    for condition in pod.status.conditions:
+                        if condition.status != "True":
+                            log.warning(
+                                "pod_condition_failed",
+                                shadow_id=env.id,
+                                pod=pod_name,
+                                type=condition.type,
+                                status=condition.status,
+                                reason=condition.reason,
+                                message=condition.message,
+                            )
+
+                # Log container statuses
+                if pod.status and pod.status.container_statuses:
+                    for container_status in pod.status.container_statuses:
+                        if container_status.state:
+                            if container_status.state.waiting:
+                                log.error(
+                                    "container_waiting",
+                                    shadow_id=env.id,
+                                    pod=pod_name,
+                                    container=container_status.name,
+                                    reason=container_status.state.waiting.reason,
+                                    message=container_status.state.waiting.message,
+                                )
+                            elif container_status.state.terminated:
+                                log.error(
+                                    "container_terminated",
+                                    shadow_id=env.id,
+                                    pod=pod_name,
+                                    container=container_status.name,
+                                    exit_code=container_status.state.terminated.exit_code,
+                                    reason=container_status.state.terminated.reason,
+                                    message=container_status.state.terminated.message,
+                                )
+
+                # Fetch recent pod logs (last 20 lines)
+                try:
+                    logs = await self._call_api(
+                        core_api.read_namespaced_pod_log,
+                        pod_name,
+                        env.namespace,
+                        tail_lines=20,
+                    )
+                    if logs:
+                        log.info("pod_logs", shadow_id=env.id, pod=pod_name, logs=logs[-500:])
+                except Exception as log_err:
+                    log.warning(
+                        "pod_logs_fetch_failed", shadow_id=env.id, pod=pod_name, error=str(log_err)
+                    )
+
+            # Fetch pod events
+            try:
+                events = await self._call_api(
+                    core_api.list_namespaced_event,
+                    env.namespace,
+                    field_selector="involvedObject.kind=Pod",
+                )
+                if events and events.items:
+                    for event in events.items[-10:]:  # Last 10 events
+                        if event.type != "Normal":
+                            log.warning(
+                                "pod_event",
+                                shadow_id=env.id,
+                                type=event.type,
+                                reason=event.reason,
+                                message=event.message,
+                                object=event.involved_object.name
+                                if event.involved_object
+                                else "unknown",
+                            )
+            except Exception as event_err:
+                log.warning("pod_events_fetch_failed", shadow_id=env.id, error=str(event_err))
+
+        except Exception as e:
+            log.exception("pod_diagnostics_failed", shadow_id=env.id, error=str(e))
 
     async def _resolve_service_target(
         self,
@@ -2387,8 +3256,6 @@ class ShadowManager:
 
     @staticmethod
     def _select_service_port(ports: list[client.V1ServicePort]) -> int:
-        """Pick the most likely HTTP service port."""
-
         def _port_value(port: client.V1ServicePort) -> int | None:
             if port.port is None:
                 return None
@@ -2412,7 +3279,6 @@ class ShadowManager:
 
     @staticmethod
     def _extract_probe_paths(deployment: client.V1Deployment) -> list[str]:
-        """Extract HTTP probe paths from deployment container probes."""
         paths: list[str] = []
         if not deployment.spec or not deployment.spec.template or not deployment.spec.template.spec:
             return paths
@@ -2432,7 +3298,6 @@ class ShadowManager:
         fallback_base: str | None,
         fallback_paths: list[str],
     ) -> LoadTestConfig | None:
-        """Determine load test configuration for shadow verification."""
         if not settings.loadtest.enabled:
             return None
 
@@ -2458,7 +3323,6 @@ class ShadowManager:
         core_api: client.CoreV1Api,
         batch_api: client.BatchV1Api,
     ) -> dict[str, Any]:
-        """Run smoke tests inside the shadow cluster."""
         job_name = self._build_job_name("aegis-smoke", env.id)
         smoke_paths = " ".join(paths)
         script = (
@@ -2545,7 +3409,6 @@ class ShadowManager:
         core_api: client.CoreV1Api,
         batch_api: client.BatchV1Api,
     ) -> dict[str, Any]:
-        """Run Locust-based load test inside the shadow cluster."""
         job_name = self._build_job_name("aegis-load", env.id)
         parsed = urlparse(config.target_url)
         base = f"{parsed.scheme}://{parsed.netloc}" if parsed.scheme else config.target_url
@@ -2785,10 +3648,7 @@ class ShadowManager:
         duration: int,
         core_api: client.CoreV1Api,
     ) -> float:
-        """Monitor shadow environment health.
-
-        Returns health score between 0.0 and 1.0.
-        """
+        """Monitor shadow environment health."""
         check_interval = 5  # seconds
         checks = []
 

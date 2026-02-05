@@ -1,6 +1,6 @@
 """Solution Generation Agent.
 
-Uses tinyllama:latest for generating practical fixes with kubectl commands and YAML manifests.
+Uses configured LLM provider (Gemini/Groq/Ollama fallback) for fix generation.
 Returns Command object for routing to verifier or direct application.
 """
 
@@ -13,7 +13,7 @@ from kubernetes.client.rest import ApiException
 from langchain_core.messages import AIMessage, HumanMessage
 from langgraph.types import Command
 
-from aegis.agent.llm.ollama import get_ollama_client
+from aegis.agent.llm.router import chat_with_schema_with_fallback
 from aegis.agent.prompts.solution_prompts import (
     SOLUTION_SYSTEM_PROMPT,
     SOLUTION_USER_PROMPT_TEMPLATE,
@@ -252,7 +252,6 @@ async def solution_agent(
         confidence=rca.confidence_score if rca else None,
     )
 
-    ollama = get_ollama_client()
     rca_result = state.get("rca_result")
 
     if not rca_result:
@@ -287,12 +286,15 @@ async def solution_agent(
 
     try:
         # Call LLM with Pydantic schema validation
-        fix_proposal: FixProposal = ollama.chat_with_schema(
+        fix_proposal, provider_used, model_used = chat_with_schema_with_fallback(
             messages=messages,
             schema=FixProposal,
+            provider=settings.agent.solution_provider,
             model=settings.agent.solution_model,
             temperature=0.2,  # Very low temperature for deterministic solutions
+            fallback_model=settings.agent.solution_fallback_model,
         )
+        assert isinstance(fix_proposal, FixProposal)
         fix_proposal = _ensure_solution_verbosity(state, fix_proposal)
         fix_proposal = _ensure_actionable_fix(state, fix_proposal)
 
@@ -301,6 +303,9 @@ async def solution_agent(
             agent_name="solution_agent",
             status="completed",
         ).inc()
+
+        llm_trace = dict(state.get("llm_trace") or {})
+        llm_trace["solution_agent"] = {"provider": provider_used, "model": model_used}
 
         # Update messages
         ai_message = AIMessage(
@@ -329,6 +334,7 @@ async def solution_agent(
                     "fix_proposal": fix_proposal,
                     "current_agent": AgentNode.VERIFIER,
                     "messages": [ai_message],
+                    "llm_trace": llm_trace,
                 },
             )
         log.info(
@@ -341,6 +347,7 @@ async def solution_agent(
                 "fix_proposal": fix_proposal,
                 "current_agent": AgentNode.END,
                 "messages": [ai_message],
+                "llm_trace": llm_trace,
             },
         )
 

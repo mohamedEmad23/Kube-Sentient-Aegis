@@ -26,13 +26,11 @@ from kopf import (
     Status,
 )
 
-from aegis.agent.graph import analyze_incident
 from aegis.agent.state import IncidentSeverity
 from aegis.config.settings import settings
 from aegis.observability._logging import get_logger
 from aegis.observability._metrics import (
     agent_iterations_total,
-    incident_analysis_duration_seconds,
     incidents_detected_total,
 )
 
@@ -447,11 +445,10 @@ async def _analyze_pod_incident(
     namespace: str,
     phase: str,
 ) -> None:
-    """Internal: Trigger AEGIS analysis workflow for pod incident.
+    """Internal: Enqueue pod incident for analysis via incident queue.
 
     This function is called internally when a pod incident is detected.
-    It invokes the LangGraph agent workflow to perform RCA and generate
-    remediation proposals.
+    It creates an incident state and enqueues it with priority for processing.
 
     Args:
         resource_name: Name of the pod
@@ -459,58 +456,64 @@ async def _analyze_pod_incident(
         phase: Current phase/error state
 
     Raises:
-        Exception: Any exception from the analysis workflow
+        Exception: Any exception from the queue enqueue operation
     """
+    from aegis.agent.state import IncidentPriority, create_initial_state
+    from aegis.incident import get_incident_queue
+
     log.info(
-        "🔍 Starting AEGIS analysis for pod incident",
+        "🔍 Enqueuing pod incident for analysis",
         pod=resource_name,
         phase=phase,
+        namespace=namespace,
     )
 
     try:
-        # Track analysis duration
-        with incident_analysis_duration_seconds.labels(
-            agent_name="pod_incident_analyzer",
-        ).time():
-            # Call the existing AEGIS agent workflow
-            result = await analyze_incident(
-                resource_type="Pod",
-                resource_name=resource_name,
-                namespace=namespace,
-            )
+        # Create incident state
+        state = create_initial_state(
+            resource_type="Pod",
+            resource_name=resource_name,
+            namespace=namespace,
+        )
 
-        # Extract results
-        rca_result = result.get("rca_result")
-        fix_proposal = result.get("fix_proposal")
+        # Assign initial priority based on phase severity
+        # CrashLoopBackOff/ImagePullBackOff → P1 (high)
+        # Failed/Unknown → P0 (critical)
+        if phase in ["CrashLoopBackOff", "ImagePullBackOff", "ErrImagePull"]:
+            state["priority"] = IncidentPriority.P1
+        elif phase in ["Failed", "Unknown"]:
+            state["priority"] = IncidentPriority.P0
+        else:
+            state["priority"] = IncidentPriority.P2
 
-        if rca_result:
-            log.info(
-                "✅ RCA completed",
-                pod=resource_name,
-                root_cause=rca_result.root_cause,
-                confidence=rca_result.confidence_score,
-            )
+        # Generate unique incident ID
+        timestamp = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
+        state["incident_id"] = f"inc-{timestamp}-{namespace}-{resource_name}"
 
-            agent_iterations_total.labels(
-                agent_name="rca_agent",
-                status="success",
-            ).inc()
+        # Enqueue incident for processing
+        queue = get_incident_queue()
+        incident_id = await queue.enqueue(state)
 
-        if fix_proposal:
-            log.info(
-                "🔧 Fix proposal generated",
-                pod=resource_name,
-                fix_type=fix_proposal.fix_type.value,
-                confidence=fix_proposal.confidence_score,
-            )
+        log.info(
+            "✅ Incident enqueued",
+            incident_id=incident_id,
+            priority=state["priority"].value,
+            pod=resource_name,
+        )
+
+        agent_iterations_total.labels(
+            agent_name="pod_incident_detector",
+            status="enqueued",
+        ).inc()
 
     except Exception:
         log.exception(
-            "❌ AEGIS analysis failed",
+            "❌ Failed to enqueue pod incident",
             pod=resource_name,
+            phase=phase,
         )
         agent_iterations_total.labels(
-            agent_name="pod_incident_analyzer",
+            agent_name="pod_incident_detector",
             status="failed",
         ).inc()
         # Don't re-raise - we don't want to crash the operator
@@ -523,7 +526,7 @@ async def _analyze_deployment_incident(
     unavailable: int,
     desired: int,
 ) -> None:
-    """Internal: Trigger AEGIS analysis workflow for deployment incident.
+    """Internal: Enqueue deployment incident for analysis via incident queue.
 
     Args:
         resource_name: Deployment name
@@ -531,34 +534,64 @@ async def _analyze_deployment_incident(
         unavailable: Number of unavailable replicas
         desired: Desired replica count
     """
+    from aegis.agent.state import IncidentPriority, create_initial_state
+    from aegis.incident import get_incident_queue
+
     log.info(
-        "🔍 Starting AEGIS analysis for deployment incident",
+        "🔍 Enqueuing deployment incident for analysis",
         deployment=resource_name,
         unavailable=unavailable,
         desired=desired,
+        namespace=namespace,
     )
 
     try:
-        with incident_analysis_duration_seconds.labels(
-            agent_name="deployment_incident_analyzer",
-        ).time():
-            result = await analyze_incident(
-                resource_type="Deployment",
-                resource_name=resource_name,
-                namespace=namespace,
-            )
+        # Create incident state
+        state = create_initial_state(
+            resource_type="Deployment",
+            resource_name=resource_name,
+            namespace=namespace,
+        )
 
-        rca_result = result.get("rca_result")
-        if rca_result:
-            log.info(
-                "✅ Deployment RCA completed",
-                deployment=resource_name,
-                root_cause=rca_result.root_cause,
-                confidence=rca_result.confidence_score,
-            )
+        # Assign priority based on percentage unavailable
+        unavailable_pct = unavailable / desired if desired > 0 else 0
+
+        if unavailable_pct > 0.75:  # >75% unavailable
+            state["priority"] = IncidentPriority.P0  # Critical
+        elif unavailable_pct > 0.5:  # >50% unavailable
+            state["priority"] = IncidentPriority.P1  # High
+        elif unavailable_pct > 0.25:  # >25% unavailable
+            state["priority"] = IncidentPriority.P2  # Medium
+        else:
+            state["priority"] = IncidentPriority.P3  # Low
+
+        # Generate unique incident ID
+        timestamp = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
+        state["incident_id"] = f"inc-{timestamp}-{namespace}-{resource_name}"
+
+        # Enqueue incident
+        queue = get_incident_queue()
+        incident_id = await queue.enqueue(state)
+
+        log.info(
+            "✅ Deployment incident enqueued",
+            incident_id=incident_id,
+            priority=state["priority"].value,
+            deployment=resource_name,
+            unavailable_pct=f"{unavailable_pct:.1%}",
+        )
+
+        agent_iterations_total.labels(
+            agent_name="deployment_incident_detector",
+            status="enqueued",
+        ).inc()
 
     except Exception:
         log.exception(
-            "❌ Deployment analysis failed",
+            "❌ Failed to enqueue deployment incident",
             deployment=resource_name,
         )
+        agent_iterations_total.labels(
+            agent_name="deployment_incident_detector",
+            status="failed",
+        ).inc()

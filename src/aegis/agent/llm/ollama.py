@@ -8,13 +8,13 @@ Provides a production-ready client for interacting with Ollama:
 - Support for multiple models (phi3:mini, deepseek-coder, llama3.1)
 """
 
-import re
 import time
 from typing import Any, Literal
 
 from ollama import ChatResponse, Client, ResponseError
 from pydantic import BaseModel
 
+from aegis.agent.llm.json_utils import validate_json_with_schema
 from aegis.config.settings import settings
 from aegis.observability._logging import get_logger
 from aegis.observability._metrics import llm_request_duration_seconds, llm_requests_total
@@ -103,12 +103,23 @@ class OllamaClient:
                 duration = time.time() - start_time
 
                 # Record metrics
-                llm_requests_total.labels(model=model, status="success").inc()
-                llm_request_duration_seconds.labels(model=model).observe(duration)
+                llm_requests_total.labels(
+                    model=model,
+                    provider="ollama",
+                    status="success",
+                ).inc()
+                llm_request_duration_seconds.labels(
+                    model=model,
+                    provider="ollama",
+                ).observe(duration)
 
             except ResponseError as e:
                 last_error = e
-                llm_requests_total.labels(model=model, status="error").inc()
+                llm_requests_total.labels(
+                    model=model,
+                    provider="ollama",
+                    status="error",
+                ).inc()
 
                 log.warning(
                     "ollama_response_error",
@@ -136,7 +147,11 @@ class OllamaClient:
 
             except ConnectionError as e:
                 last_error = e
-                llm_requests_total.labels(model=model, status="connection_error").inc()
+                llm_requests_total.labels(
+                    model=model,
+                    provider="ollama",
+                    status="connection_error",
+                ).inc()
 
                 log.warning(
                     "ollama_connection_error",
@@ -214,26 +229,8 @@ class OllamaClient:
             raise ValueError(msg)
 
         try:
-            validated = schema.model_validate_json(response.message.content)
+            validated = validate_json_with_schema(response.message.content, schema)
         except Exception as e:
-            # Try to extract JSON from markdown code blocks
-            content = response.message.content
-            json_match = re.search(r"```json\s*(.*?)\s*```", content, re.DOTALL)
-            if not json_match:
-                json_match = re.search(r"```\s*(.*?)\s*```", content, re.DOTALL)
-
-            if json_match:
-                try:
-                    validated = schema.model_validate_json(json_match.group(1))
-                except ValueError as extraction_error:
-                    log.warning(
-                        "schema_extraction_failed",
-                        schema=schema.__name__,
-                        error=str(extraction_error),
-                    )
-                else:
-                    return validated
-
             log.exception(
                 "schema_validation_failed",
                 schema=schema.__name__,
@@ -242,13 +239,13 @@ class OllamaClient:
             raise ValueError(
                 f"Failed to validate response against {schema.__name__} schema: {e}"
             ) from e
-        else:
-            log.debug(
-                "schema_validation_success",
-                schema=schema.__name__,
-                model=model or self.default_model,
-            )
-            return validated
+
+        log.debug(
+            "schema_validation_success",
+            schema=schema.__name__,
+            model=model or self.default_model,
+        )
+        return validated
 
     def is_available(self) -> bool:
         """Check if Ollama server is available.
@@ -256,6 +253,8 @@ class OllamaClient:
         Returns:
             bool: True if server responds, False otherwise
         """
+        if not settings.ollama.enabled:
+            return False
         try:
             # Try to list models as health check
             self.client.list()

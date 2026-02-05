@@ -140,7 +140,7 @@ If you don't want to download models locally, use cloud APIs:
 ```bash
 # No model download needed!
 # Just set API key in .env
-GROQ_API_KEY=your_key_here
+GROQ_API=your_key_here
 ```
 
 **Models available:**
@@ -151,7 +151,7 @@ GROQ_API_KEY=your_key_here
 
 ```bash
 # No model download needed!
-GOOGLE_API_KEY=your_key_here
+GOOGLE_GEMINI_API=your_key_here
 ```
 
 ### Option 3: Together AI
@@ -162,9 +162,13 @@ TOGETHER_API_KEY=your_key_here
 
 **Configuration in `.env`:**
 ```bash
-# Use cloud API instead of local Ollama
+# Use cloud APIs as primary providers with Ollama fallback
+AGENT_RCA_PROVIDER=groq
+AGENT_SOLUTION_PROVIDER=gemini
+AGENT_VERIFIER_PROVIDER=gemini
+
+# Optional: disable Ollama if you only want cloud (no fallback)
 OLLAMA_ENABLED=false
-# Cloud backends are not wired in code yet; Ollama is the supported backend.
 ```
 
 ---

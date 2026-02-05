@@ -36,7 +36,7 @@ from rich.panel import Panel
 from rich.table import Table
 
 from aegis.agent.graph import analyze_incident
-from aegis.agent.llm.ollama import get_ollama_client
+from aegis.agent.llm.router import provider_is_available
 from aegis.agent.state import (
     FixProposal,
     IncidentState,
@@ -217,6 +217,55 @@ def _display_analysis_results(console: Console, result: IncidentState) -> None:
         result: Analysis result dictionary
 
     """
+    # Display Observability Data (Prometheus metrics + Grafana dashboard)
+    prometheus_metrics = result.get("prometheus_metrics")
+    grafana_url = result.get("grafana_dashboard_url")
+
+    if prometheus_metrics or grafana_url:
+        obs_text = ""
+
+        if prometheus_metrics:
+            obs_text += "[bold]Prometheus Metrics:[/bold]\n"
+            cpu = prometheus_metrics.get("cpu_usage")
+            memory = prometheus_metrics.get("memory_usage")
+            restarts = prometheus_metrics.get("restarts")
+            latency = prometheus_metrics.get("p99_latency")
+            error_rate = prometheus_metrics.get("error_rate")
+            ready_pods = prometheus_metrics.get("ready_pods")
+            total_pods = prometheus_metrics.get("total_pods")
+
+            if cpu is not None:
+                obs_text += f"  • CPU Usage: [cyan]{cpu:.2f}%[/cyan]\n"
+            if memory is not None:
+                obs_text += f"  • Memory Usage: [cyan]{memory:.2f} MB[/cyan]\n"
+            if restarts is not None:
+                color = "red" if restarts > 5 else "yellow" if restarts > 0 else "green"
+                obs_text += f"  • Container Restarts: [{color}]{restarts}[/{color}]\n"
+            if latency is not None:
+                color = "red" if latency > 1000 else "yellow" if latency > 500 else "green"
+                obs_text += f"  • P99 Latency: [{color}]{latency:.0f}ms[/{color}]\n"
+            if error_rate is not None:
+                color = "red" if error_rate > 5 else "yellow" if error_rate > 1 else "green"
+                obs_text += f"  • Error Rate: [{color}]{error_rate:.2f}%[/{color}]\n"
+            if ready_pods is not None and total_pods is not None:
+                color = "green" if ready_pods == total_pods else "yellow"
+                obs_text += f"  • Ready Pods: [{color}]{ready_pods}/{total_pods}[/{color}]\n"
+
+            obs_text += "\n"
+
+        if grafana_url:
+            obs_text += (
+                f"[bold]Grafana Dashboard:[/bold]\n  🔗 [link={grafana_url}]{grafana_url}[/link]\n"
+            )
+
+        obs_panel = Panel(
+            obs_text.strip(),
+            title="[bold magenta]Observability Data[/bold magenta]",
+            border_style="magenta",
+        )
+        console.print(obs_panel)
+        console.print()
+
     # Display RCA Results
     rca_result = result.get("rca_result")
     if rca_result:
@@ -343,8 +392,8 @@ def _run_shadow_verification(
     namespace: str,
     fix_proposal: FixProposal,
     verification_plan: VerificationPlan,
-) -> tuple[str | None, bool | None, str | None]:
-    """Execute shadow verification and return (shadow_id, passed, logs)."""
+) -> tuple[str | None, bool | None, str | None, dict[str, Any] | None]:
+    """Execute shadow verification and return (shadow_id, passed, logs, security_results)."""
     shadow_manager = get_shadow_manager()
     # Explicit mappings for multi-word Kubernetes resource kinds
     # to ensure correct CamelCase formatting (e.g., DaemonSet, not Daemonset)
@@ -384,9 +433,9 @@ def _run_shadow_verification(
         console.print(
             "[yellow]No actionable changes found for shadow verification. Skipping.[/yellow]",
         )
-        return None, None, None
+        return None, None, None, None
 
-    async def _execute() -> tuple[str | None, bool | None, str | None]:
+    async def _execute() -> tuple[str | None, bool | None, str | None, dict[str, Any] | None]:
         shadow_env = await shadow_manager.create_shadow(
             source_namespace=namespace,
             source_resource=resource_name,
@@ -395,6 +444,7 @@ def _run_shadow_verification(
         shadow_id = shadow_env.id
         passed = None
         logs = None
+        security_results = None
         try:
             passed = await shadow_manager.run_verification(
                 shadow_id=shadow_env.id,
@@ -403,33 +453,64 @@ def _run_shadow_verification(
                 verification_plan=verification_plan,
             )
             env = shadow_manager.get_environment(shadow_env.id)
-            if env and env.logs:
-                logs = "\n".join(env.logs)
+            if env:
+                if env.logs:
+                    logs = "\n".join(env.logs)
+                # Capture security scan results from shadow environment
+                if env.test_results:
+                    security_results = env.test_results.get("security")
         finally:
             # Ensure cleanup always runs even if verification/log fetch fails
             if settings.shadow.auto_cleanup:
                 await shadow_manager.cleanup(shadow_env.id)
-        return shadow_id, passed, logs
+        return shadow_id, passed, logs, security_results
 
     with console.status("[bold blue]Running shadow verification..."):
         try:
-            shadow_id, passed, logs = asyncio.run(_execute())
+            shadow_id, passed, logs, security_results = asyncio.run(_execute())
         except Exception as e:  # pragma: no cover - runtime path
             log.exception("shadow_verification_failed_cli")
             console.print(f"[bold red]Shadow verification failed:[/bold red] {e}\n")
-            return None, False, None
+            return None, False, None, None
 
-    return shadow_id, passed, logs
+    return shadow_id, passed, logs, security_results
 
 
-def _ensure_ollama_available(console: Console) -> None:
-    """Ensure Ollama is available or exit."""
-    ollama_client = get_ollama_client()
-    if not ollama_client.is_available():
-        console.print("[bold red]Error:[/bold red] Ollama server is not available")
-        console.print("Please start Ollama: [cyan]ollama serve[/cyan]")
-        log.error("ollama_unavailable")
-        raise typer.Exit(code=1)
+def _ensure_llm_available(console: Console) -> None:
+    """Ensure configured LLM providers are available or exit."""
+    providers = {
+        "rca_agent": settings.agent.rca_provider,
+        "solution_agent": settings.agent.solution_provider,
+        "verifier_agent": settings.agent.verifier_provider,
+    }
+
+    missing: list[tuple[str, str]] = []
+    for agent_name, provider in providers.items():
+        provider_value = provider.value if hasattr(provider, "value") else str(provider)
+        if not provider_is_available(provider_value):
+            missing.append((agent_name, provider_value))
+
+    if not missing:
+        return
+
+    ollama_available = provider_is_available("ollama")
+    missing_non_ollama = [item for item in missing if item[1] != "ollama"]
+
+    if missing_non_ollama and ollama_available:
+        missing_agents = ", ".join(f"{agent}({provider})" for agent, provider in missing_non_ollama)
+        console.print(
+            "[bold yellow]Warning:[/bold yellow] "
+            "Primary LLM providers are unavailable. Falling back to Ollama for: "
+            f"{missing_agents}"
+        )
+        log.warning("llm_fallback_enabled", missing=missing_non_ollama)
+        return
+
+    console.print("[bold red]Error:[/bold red] Required LLM providers are not available.")
+    if not ollama_available:
+        console.print("Ollama fallback is not available. Start Ollama: [cyan]ollama serve[/cyan]")
+    log.error("llm_unavailable", missing=missing)
+    raise typer.Exit(code=1)
 
 
 def _validate_resource_format(res: str) -> tuple[str, str]:
@@ -508,7 +589,7 @@ def _maybe_run_shadow_verification(
         and fix_proposal
         and verification_plan.verification_type == "shadow"
     ):
-        shadow_id, passed, logs = _run_shadow_verification(
+        shadow_id, passed, logs, security_results = _run_shadow_verification(
             console=console,
             resource_type=resource_type,
             resource_name=resource_name,
@@ -519,6 +600,7 @@ def _maybe_run_shadow_verification(
         result["shadow_env_id"] = shadow_id
         result["shadow_test_passed"] = passed
         result["shadow_logs"] = logs
+        result["shadow_security_results"] = security_results
 
         # Handle skipped verification (no actionable changes)
         if passed is None:
@@ -534,6 +616,47 @@ def _maybe_run_shadow_verification(
         else:
             status = "[bold green]PASSED[/bold green]" if passed else "[bold red]FAILED[/bold red]"
             details = f"[bold]Shadow ID:[/bold] {shadow_id}\n[bold]Result:[/bold] {status}"
+
+            # Add security scan results if available
+            if security_results:
+                details += "\n\n[bold cyan]Security Scan Results:[/bold cyan]"
+                sec_overall = (
+                    "[green]PASSED[/green]"
+                    if security_results.get("passed", True)
+                    else "[red]FAILED[/red]"
+                )
+                details += f"\n  Overall: {sec_overall}"
+
+                # Kubesec results
+                kubesec = security_results.get("kubesec")
+                if kubesec and not kubesec.get("skipped"):
+                    ks_status = (
+                        "[green]✓[/green]" if kubesec.get("passed", True) else "[red]✗[/red]"
+                    )
+                    details += f"\n  Kubesec: {ks_status} (score: {kubesec.get('score', 'N/A')})"
+                    if kubesec.get("critical_issues"):
+                        for issue in kubesec["critical_issues"][:2]:
+                            details += (
+                                f"\n    [red]• {issue[:60]}...[/red]"
+                                if len(issue) > 60
+                                else f"\n    [red]• {issue}[/red]"
+                            )
+
+                # Trivy results
+                trivy = security_results.get("trivy")
+                if trivy and not trivy.get("skipped"):
+                    tr_status = "[green]✓[/green]" if trivy.get("passed", True) else "[red]✗[/red]"
+                    counts = trivy.get("severity_counts", {})
+                    vuln_summary = f"CRIT:{counts.get('CRITICAL', 0)} HIGH:{counts.get('HIGH', 0)}"
+                    details += f"\n  Trivy: {tr_status} ({vuln_summary})"
+
+                # Falco results
+                falco = security_results.get("falco")
+                if falco and not falco.get("skipped"):
+                    fa_status = "[green]✓[/green]" if falco.get("passed", True) else "[red]✗[/red]"
+                    alert_count = falco.get("alert_count", 0)
+                    details += f"\n  Falco: {fa_status} ({alert_count} runtime alerts)"
+
             if logs:
                 tail = "\n".join(logs.splitlines()[-6:])
                 details += f"\n\n[bold]Evidence Logs:[/bold]\n{tail}"
@@ -817,34 +940,155 @@ def _prompt_apply_fix_to_cluster(
         return
 
     console.print()
-    console.print("[bold cyan]━" * 50 + "[/bold cyan]")
-    console.print("[bold cyan]Shadow verification PASSED![/bold cyan]")
+    console.print("[bold green]" + "━" * 60 + "[/bold green]")
+    console.print("[bold green]✓ SHADOW VERIFICATION PASSED[/bold green]")
+    console.print("[bold green]" + "━" * 60 + "[/bold green]")
+    console.print()
     console.print(
-        "The proposed fix has been verified in an isolated vCluster environment.\n",
+        "The proposed fix has been verified in an isolated vCluster environment.",
     )
+    console.print(
+        f"Resource: [cyan]{resource_type}/{resource_name}[/cyan] in namespace [yellow]{namespace}[/yellow]",
+    )
+    console.print()
+
+    # Display security scan results from shadow verification
+    shadow_security = result.get("shadow_security_results")
+    if shadow_security:
+        security_text = "[bold]Security Scan Results:[/bold]\n"
+
+        # Kubesec
+        kubesec = shadow_security.get("kubesec")
+        if kubesec:
+            status = "✅ Passed" if kubesec.get("passed") else "❌ Failed"
+            score = kubesec.get("score", "N/A")
+            security_text += f"  • [bold]Kubesec:[/bold] {status} (score: {score})\n"
+            critical = kubesec.get("critical_issues", [])
+            if critical:
+                for issue in critical[:3]:
+                    security_text += f"    ⚠️  {issue}\n"
+
+        # Trivy
+        trivy = shadow_security.get("trivy")
+        if trivy:
+            status = "✅ Passed" if trivy.get("passed") else "❌ Failed"
+            vuln_count = trivy.get("vulnerabilities", 0)
+            severity = trivy.get("severity_counts", {})
+            security_text += f"  • [bold]Trivy:[/bold] {status} ({vuln_count} vulnerabilities)\n"
+            if severity:
+                crit = severity.get("CRITICAL", 0)
+                high = severity.get("HIGH", 0)
+                if crit > 0 or high > 0:
+                    security_text += (
+                        f"    [red]CRITICAL: {crit}[/red], [yellow]HIGH: {high}[/yellow]\n"
+                    )
+
+        # Falco
+        falco = shadow_security.get("falco")
+        if falco:
+            if falco.get("skipped"):
+                security_text += "  • [bold]Falco:[/bold] [dim]Skipped (not available)[/dim]\n"
+            else:
+                status = "✅ Passed" if falco.get("passed") else "❌ Failed"
+                alert_count = falco.get("alert_count", 0)
+                security_text += (
+                    f"  • [bold]Falco:[/bold] {status} ({alert_count} runtime alerts)\n"
+                )
+
+        overall = "✅ All Passed" if shadow_security.get("passed") else "⚠️  Issues Found"
+        security_text += f"\n[bold]Overall Security Status:[/bold] {overall}"
+
+        security_panel = Panel(
+            security_text,
+            title="[bold magenta]🔒 Security Scan Results[/bold magenta]",
+            border_style="magenta",
+        )
+        console.print(security_panel)
+        console.print()
+
+    # Display observability data for informed decision
+    prometheus_metrics = result.get("prometheus_metrics")
+    grafana_url = result.get("grafana_dashboard_url")
+    if prometheus_metrics or grafana_url:
+        obs_text = ""
+        if prometheus_metrics:
+            cpu = prometheus_metrics.get("cpu_usage")
+            memory = prometheus_metrics.get("memory_usage")
+            restarts = prometheus_metrics.get("restarts")
+            if cpu is not None:
+                obs_text += f"  • CPU: [cyan]{cpu:.1f}%[/cyan]  "
+            if memory is not None:
+                obs_text += f"  • Memory: [cyan]{memory:.1f}MB[/cyan]  "
+            if restarts is not None:
+                color = "red" if restarts > 5 else "yellow" if restarts > 0 else "green"
+                obs_text += f"  • Restarts: [{color}]{restarts}[/{color}]"
+            obs_text += "\n"
+        if grafana_url:
+            obs_text += f"\n  🔗 Dashboard: [link={grafana_url}]{grafana_url}[/link]"
+
+        if obs_text.strip():
+            obs_panel = Panel(
+                obs_text.strip(),
+                title="[bold blue]📊 Current Metrics[/bold blue]",
+                border_style="blue",
+            )
+            console.print(obs_panel)
+            console.print()
 
     # Show fix summary before prompting
-    console.print("[bold]Proposed Fix Summary:[/bold]")
-    console.print(f"  • Type: [cyan]{fix_proposal.fix_type.value}[/cyan]")
-    console.print(f"  • Description: {fix_proposal.description}")
-    if fix_proposal.commands:
-        console.print("  • Commands to execute:")
-        for cmd in fix_proposal.commands[:3]:
-            console.print(f"      [dim]{cmd}[/dim]")
-    if fix_proposal.risks:
-        console.print("  • [yellow]Risks:[/yellow]")
-        for risk in fix_proposal.risks:
-            console.print(f"      ⚠️  {risk}")
+    fix_summary_panel = Panel(
+        f"[bold]Type:[/bold] {fix_proposal.fix_type.value}\n"
+        f"[bold]Description:[/bold] {fix_proposal.description}\n\n"
+        f"[bold]Commands:[/bold]\n"
+        + "\n".join(f"  • {cmd}" for cmd in (fix_proposal.commands or [])[:5])
+        + (
+            "\n  • [dim]...[/dim]"
+            if fix_proposal.commands and len(fix_proposal.commands) > 5
+            else ""
+        )
+        + (
+            "\n\n[bold yellow]Risks:[/bold yellow]\n"
+            + "\n".join(f"  ⚠️  {r}" for r in fix_proposal.risks)
+            if fix_proposal.risks
+            else ""
+        ),
+        title="[bold]Fix Summary[/bold]",
+        border_style="white",
+    )
+    console.print(fix_summary_panel)
     console.print()
 
     # Auto-fix mode or prompt user
     if auto_fix:
         apply_fix = True
-        console.print("[yellow]Auto-fix mode enabled. Applying fix automatically...[/yellow]\n")
+        console.print(
+            "[bold yellow]╔════════════════════════════════════════════════════════════╗[/bold yellow]",
+        )
+        console.print(
+            "[bold yellow]║  AUTO-FIX MODE: Applying fix automatically...              ║[/bold yellow]",
+        )
+        console.print(
+            "[bold yellow]╚════════════════════════════════════════════════════════════╝[/bold yellow]",
+        )
+        console.print()
     else:
-        # Interactive confirmation prompt
+        # Interactive confirmation prompt with prominent visual
+        console.print(
+            "[bold cyan]╔════════════════════════════════════════════════════════════╗[/bold cyan]",
+        )
+        console.print(
+            "[bold cyan]║              🛡️  HUMAN APPROVAL REQUIRED  🛡️               ║[/bold cyan]",
+        )
+        console.print(
+            "[bold cyan]╚════════════════════════════════════════════════════════════╝[/bold cyan]",
+        )
+        console.print()
+        console.print("[bold]This action will apply the fix to your PRODUCTION cluster.[/bold]")
+        console.print("[dim]The fix has been verified in shadow environment.[/dim]")
+        console.print()
+
         apply_fix = typer.confirm(
-            "Apply this fix to the PRODUCTION cluster?",
+            "🔐 Apply this fix to the PRODUCTION cluster? (yes/no)",
             default=False,
         )
 
@@ -950,8 +1194,8 @@ def analyze(
         f"\n[bold cyan]Analyzing:[/bold cyan] {resource} in namespace [yellow]{namespace}[/yellow]\n",
     )
 
-    # Check Ollama availability
-    _ensure_ollama_available(console)
+    # Check LLM availability
+    _ensure_llm_available(console)
 
     # Parse resource (format: type/name)
     resource_type, resource_name = _parse_resource_or_exit(console, resource)
@@ -1736,6 +1980,8 @@ def _spawn_shadow_create(
     shadow_id: str,
 ) -> Path:
     """Spawn a background process to create the shadow environment."""
+    import subprocess
+
     log_path = _shadow_log_path(shadow_id)
     cmd = [
         sys.executable,
@@ -1750,14 +1996,13 @@ def _spawn_shadow_create(
         shadow_id,
         "--wait",
     ]
+    log_path.parent.mkdir(parents=True, exist_ok=True)
     with log_path.open("wb") as handle:
-        asyncio.run(
-            asyncio.create_subprocess_exec(
-                *cmd,
-                stdout=handle,
-                stderr=handle,
-                start_new_session=True,
-            )
+        subprocess.Popen(
+            cmd,
+            stdout=handle,
+            stderr=subprocess.STDOUT,
+            start_new_session=True,
         )
     return log_path
 
@@ -2213,7 +2458,24 @@ def config(
   Environment: {settings.environment.value}
   Debug: {settings.debug}
 
-[bold]Ollama LLM[/bold]
+[bold]LLM Providers[/bold]
+  RCA: {settings.agent.rca_provider.value} ({settings.agent.rca_model}) fallback={settings.agent.rca_fallback_model}
+  Solution: {settings.agent.solution_provider.value} ({settings.agent.solution_model}) fallback={settings.agent.solution_fallback_model}
+  Verifier: {settings.agent.verifier_provider.value} ({settings.agent.verifier_model}) fallback={settings.agent.verifier_fallback_model}
+
+[bold]Groq[/bold]
+  Enabled: {settings.groq.enabled}
+  Model: {settings.groq.model}
+  API Key: {"set" if settings.groq.api_key else "missing"}
+  Base URL: {settings.groq.base_url}
+
+[bold]Gemini[/bold]
+  Enabled: {settings.gemini.enabled}
+  Model: {settings.gemini.model}
+  API Key: {"set" if settings.gemini.api_key else "missing"}
+  Base URL: {settings.gemini.base_url}
+
+[bold]Ollama[/bold]
   Base URL: {settings.ollama.base_url}
   Default Model: {settings.ollama.model}
   Timeout: {settings.ollama.timeout}s
@@ -2239,6 +2501,219 @@ def config(
 
     console.print(Panel(config_text, border_style="blue"))
     console.print()
+
+
+# ============================================================================
+# Queue Command Group
+# ============================================================================
+
+queue_app = typer.Typer(help="Manage incident queue")
+app.add_typer(queue_app, name="queue")
+
+
+@typed_command(queue_app, name="status")
+def queue_status() -> None:
+    """Show current incident queue status.
+
+    Displays queue depth by priority, production lock status,
+    and summary statistics.
+
+    Example:
+        aegis queue status
+
+    """
+    log.info("checking_queue_status")
+
+    try:
+        from aegis.incident import get_incident_queue
+    except ImportError as e:
+        console.print(f"[bold red]Error:[/bold red] Failed to import incident queue: {e}")
+        raise typer.Exit(code=1) from None
+
+    queue = get_incident_queue()
+
+    console.print("\n[bold cyan]Incident Queue Status[/bold cyan]\n")
+
+    # Production lock status
+    locked, reason = queue.is_production_locked()
+    if locked:
+        console.print(f"[red]🔒 PRODUCTION LOCKED[/red]: {reason}\n")
+    else:
+        console.print("[green]🔓 Production unlocked[/green]\n")
+
+    # Queue depth by priority
+    table = Table(title="Queue Depth by Priority", show_header=True, header_style="bold magenta")
+    table.add_column("Priority", style="cyan", justify="left")
+    table.add_column("Depth", justify="right", style="yellow")
+    table.add_column("Description", style="dim")
+
+    priority_descriptions = {
+        "p0": "Critical - Locks production",
+        "p1": "High - Immediate attention",
+        "p2": "Medium - Process soon",
+        "p3": "Low - Process when available",
+        "p4": "Info - Background processing",
+    }
+
+    # Get metrics
+    metrics = queue.get_metrics()
+    depth_by_priority = metrics.get("depth_by_priority", {})
+
+    total_depth = 0
+    for priority in ["p0", "p1", "p2", "p3", "p4"]:
+        depth = depth_by_priority.get(priority, 0)
+        total_depth += depth
+        desc = priority_descriptions.get(priority, "")
+
+        style_color = "red bold" if priority == "p0" else "yellow" if priority == "p1" else "white"
+        priority_display = f"[{style_color}]{priority.upper()}[/{style_color}]"
+
+        table.add_row(priority_display, str(depth), desc)
+
+    console.print(table)
+
+    # Summary statistics
+    console.print("\n[bold]Summary:[/bold]")
+    console.print(f"  Total in Queue: [yellow]{total_depth}[/yellow]")
+    console.print("  Processing Enabled: [green]Yes[/green]")
+    console.print()
+
+
+@typed_command(queue_app, name="unlock")
+def queue_unlock(
+    force: bool = typer.Option(
+        False,
+        "--force",
+        "-f",
+        help="Force unlock without confirmation",
+    ),
+) -> None:
+    """Unlock production deployments.
+
+    Manually unlocks production when locked by a P0 incident.
+    Use with caution - only unlock if you're certain the blocking
+    incident has been resolved.
+
+    Example:
+        aegis queue unlock
+        aegis queue unlock --force
+
+    """
+    log.info("unlocking_production", force=force)
+
+    try:
+        from aegis.incident import get_incident_queue
+    except ImportError as e:
+        console.print(f"[bold red]Error:[/bold red] Failed to import incident queue: {e}")
+        raise typer.Exit(code=1) from None
+
+    queue = get_incident_queue()
+
+    # Check if locked
+    locked, reason = queue.is_production_locked()
+
+    if not locked:
+        console.print("[yellow]Production is not currently locked[/yellow]")
+        console.print()
+        raise typer.Exit(code=0)
+
+    console.print(f"\n[bold red]Production is locked:[/bold red] {reason}\n")
+
+    if not force:
+        confirm = typer.confirm("Are you sure you want to unlock production?")
+        if not confirm:
+            console.print("[yellow]Unlock cancelled[/yellow]")
+            raise typer.Exit(code=0)
+
+    # Manually unlock by clearing the production lock
+    # This is a forceful operation - normally the lock clears when P0 incidents are resolved
+    queue._production_locked = False
+    queue._production_lock_reason = None
+
+    console.print("[green]✓[/green] Production unlocked")
+    console.print(
+        "[yellow]Warning:[/yellow] Ensure blocking incidents are resolved before deploying"
+    )
+    console.print()
+
+
+# ============================================================================
+# Rollback Command
+# ============================================================================
+
+
+@typed_command(app)
+def rollback(
+    resource: str = typer.Argument(
+        ...,
+        help="Resource to rollback (kind/name, e.g., deployment/api)",
+    ),
+    snapshot_id: str = typer.Option(
+        ...,
+        "--snapshot",
+        "-s",
+        help="Snapshot ID to rollback to",
+    ),
+    namespace: str = typer.Option(
+        "default",
+        "--namespace",
+        "-n",
+        help="Kubernetes namespace",
+    ),
+    force: bool = typer.Option(
+        False,
+        "--force",
+        "-f",
+        help="Skip confirmation prompt",
+    ),
+) -> None:
+    """Manually trigger rollback to a previous snapshot.
+
+    Restores a Kubernetes resource to a previously captured state.
+    Snapshots are automatically created before production deployments.
+
+    Examples:
+        aegis rollback deployment/api --snapshot snapshot-20260204-123456
+        aegis rollback deployment/api -s snapshot-20260204-123456 -n production
+        aegis rollback deployment/api -s snapshot-20260204-123456 --force
+
+    """
+    resource_kind, resource_name = _parse_resource_ref(resource)
+    log.info(
+        "manual_rollback",
+        resource_kind=resource_kind,
+        resource_name=resource_name,
+        namespace=namespace,
+        snapshot_id=snapshot_id,
+    )
+
+    console.print("\n[bold yellow]Manual Rollback Requested[/bold yellow]\n")
+    console.print(f"Resource: [cyan]{resource_kind}/{resource_name}[/cyan]")
+    console.print(f"Namespace: [yellow]{namespace}[/yellow]")
+    console.print(f"Snapshot ID: [blue]{snapshot_id}[/blue]")
+    console.print()
+
+    if not force:
+        confirm = typer.confirm(
+            f"Rollback {resource_kind}/{resource_name} to snapshot {snapshot_id}?"
+        )
+        if not confirm:
+            console.print("[yellow]Rollback cancelled[/yellow]")
+            raise typer.Exit(code=0)
+
+    # Load snapshot (in production, this would load from persistent storage)
+    # For now, we'll show an error as snapshot storage isn't implemented
+    console.print(
+        "[bold red]Error:[/bold red] Snapshot storage not yet implemented\n"
+        "[dim]Snapshots are currently stored in memory during the incident lifecycle[/dim]"
+    )
+    console.print()
+    console.print("[yellow]Manual workaround:[/yellow]")
+    console.print("  1. View snapshot details in operator logs")
+    console.print("  2. Manually apply resource configuration using kubectl")
+    console.print()
+
+    raise typer.Exit(code=1)
 
 
 # ============================================================================
@@ -2286,8 +2761,20 @@ def operator_run(
     console.print("\n[bold cyan]AEGIS Kubernetes Operator[/bold cyan]")
     console.print("━" * 40)
     console.print(f"Watching: [yellow]{namespace or 'all namespaces'}[/yellow]")
-    console.print(f"Model: [green]{settings.ollama.model}[/green]")
-    console.print(f"Base URL: [blue]{settings.ollama.base_url}[/blue]")
+    console.print(
+        f"RCA: [green]{settings.agent.rca_provider.value}[/green] ({settings.agent.rca_model})"
+    )
+    console.print(
+        "Solution: "
+        f"[green]{settings.agent.solution_provider.value}[/green] "
+        f"({settings.agent.solution_model})"
+    )
+    console.print(
+        "Verifier: "
+        f"[green]{settings.agent.verifier_provider.value}[/green] "
+        f"({settings.agent.verifier_model})"
+    )
+    console.print(f"Ollama Base URL: [blue]{settings.ollama.base_url}[/blue]")
     console.print("━" * 40)
     console.print("[dim]Press Ctrl+C to stop[/dim]\n")
 
@@ -2346,6 +2833,18 @@ def operator_status() -> None:
                 console.print("[yellow]○[/yellow] K8sGPT Results: CRD not installed")
             else:
                 console.print(f"[red]✗[/red] K8sGPT Results: Error - {e.reason}")
+
+        # Check Groq/Gemini configuration
+        groq_ok = settings.groq.enabled and bool(settings.groq.api_key)
+        gemini_ok = settings.gemini.enabled and bool(settings.gemini.api_key)
+        console.print(
+            f"{'[green]✓[/green]' if groq_ok else '[red]✗[/red]'} Groq: "
+            f"{'Configured' if groq_ok else 'Missing API key'}"
+        )
+        console.print(
+            f"{'[green]✓[/green]' if gemini_ok else '[red]✗[/red]'} Gemini: "
+            f"{'Configured' if gemini_ok else 'Missing API key'}"
+        )
 
         # Check Ollama connectivity
         try:

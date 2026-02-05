@@ -1,5 +1,8 @@
-# vCluster template for AEGIS Shadow Environments
+# vCluster template for AEGIS Shadow Environments (HIGH PERFORMANCE)
+# Optimized for 8 CPU / 40GB RAM Workstation
+#
 # This template creates isolated virtual Kubernetes clusters for fix verification
+# with sufficient resources for immediate API responsiveness.
 #
 # Usage by AEGIS:
 #   1. Create shadow: vcluster create shadow-{incident_id} -n aegis-shadows -f vcluster-template.yaml
@@ -8,63 +11,55 @@
 #   4. Run verification tests
 #   5. Cleanup: vcluster delete shadow-{incident_id} -n aegis-shadows
 
-# vCluster configuration
-# NOTE: sync settings are omitted for compatibility with newer vcluster schemas.
-
-# Note: The "isolation" block was removed for vcluster v0.20+ compatibility.
-# If you need quotas/limits, configure them via policies or apply them after
-# vcluster creation with standard Kubernetes objects.
-
 # Control plane configuration
 controlPlane:
-  # Use k3s as the control plane (lightweight)
+  # Use k3s as the control plane (lightweight but powerful)
   distro:
     k3s:
       enabled: true
 
-  # Resource limits for vCluster control plane
-  # Optimized for local development and resource-constrained environments
+  # Give it real power so the API is responsive immediately
   statefulSet:
     resources:
       requests:
-        cpu: "50m"        # Reduced from 100m for low-resource environments
-        memory: "128Mi"   # Reduced from 256Mi
+        cpu: "500m" # 0.5 Core reserved (50x more than before)
+        memory: "1Gi" # 1GB RAM reserved
       limits:
-        cpu: "500m"       # Keep reasonable limit for bursting
-        memory: "512Mi"
+        cpu: "2000m" # Burst up to 2 Cores
+        memory: "4Gi" # Burst up to 4GB RAM
 
-    # Faster startup for demos
+    # High performance disk IO settings
     persistence:
       volumeClaim:
-        enabled: false  # Use emptyDir for faster creation
+        enabled: false # Keep using emptyDir for speed (RAM disk essentially)
 
-    # Image pull policy for faster startup
-    imagePullPolicy: IfNotPresent
+    # Aggressive scheduling
+    scheduling:
+      podManagementPolicy: Parallel
 
 # Networking
 networking:
   # Replicate services between host and vCluster
+  # This enables DNS resolution for cloned services inside shadow environment
   replicateServices:
-    toHost: []
-    fromHost: []
+    toHost: [] # Don't expose shadow services to host
+    fromHost: [] # Sync host services marked for shadow testing
 
-# Policies
+# Security Policies
 policies:
   # Pod security standards
   podSecurityStandard: baseline
 
-  # Resource quota (disabled by default)
+  # Resource quota (disabled - we have plenty of resources)
   resourceQuota:
-    enabled: false
+    enabled: false # No artificial limits
 
 # Telemetry (disable for privacy)
 telemetry:
   enabled: false
 
-# Export kubeconfig
+# Export kubeconfig for the agent
 exportKubeConfig:
   # Make kubeconfig available as secret
   secret:
     name: "vc-shadow-kubeconfig"
-
-# Labels/annotations omitted for compatibility with older vcluster config schema.

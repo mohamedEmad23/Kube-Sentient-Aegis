@@ -1,10 +1,13 @@
 """LangGraph workflow orchestration for AEGIS incident analysis.
 
 Defines the complete multi-agent workflow using LangGraph's StateGraph:
-- RCA Agent → Solution Agent → Verifier Agent
+- RCA Agent → Solution Agent → Verifier Agent → [Production Deployment] → Rollback Monitor
 - Command-based dynamic routing
 - Checkpointing support for human-in-the-loop
 - Async execution with proper error handling
+- Prometheus metrics integration for RCA enrichment and rollback monitoring
+- Grafana dashboard link generation
+- Automated rollback on production degradation (error rate spike >20%)
 """
 
 import asyncio
@@ -22,6 +25,8 @@ from aegis.agent.analyzer import get_k8sgpt_analyzer
 from aegis.agent.state import IncidentState, K8sGPTAnalysis, create_initial_state
 from aegis.config.settings import settings
 from aegis.observability._logging import get_logger
+from aegis.observability.grafana import generate_dashboard_url
+from aegis.observability.prometheus_client import fetch_prometheus_metrics
 
 
 if TYPE_CHECKING:
@@ -207,12 +212,24 @@ def create_incident_workflow(
         Compiled StateGraph ready for invocation
 
     Workflow:
-        START → rca_agent → solution_agent → verifier_agent → END
+        START → rca_agent → solution_agent → verifier_agent →
+        [shadow_verification] → [human_approval] → [production_deployment] →
+        rollback_monitor → END
 
         Dynamic routing via Command:
         - RCA: confidence < 0.7 → END
-        - Solution: low-risk → END, high-risk → verifier
-        - Verifier: always → END
+        - Solution: low-risk → verifier, high-risk → shadow verification
+        - Verifier: Creates verification plan
+        - Shadow: Tested in operator via handlers/shadow.py
+        - Approval: Human yes/no via approval_cli.py
+        - Production: Apply fix + capture snapshot
+        - Rollback Monitor: 5min error rate monitoring, auto-rollback if >20% spike
+
+    Note:
+        Shadow verification, human approval, and production deployment are
+        handled by the operator (k8s_operator/handlers/) rather than as
+        explicit graph nodes. The rollback_agent is available for integration
+        when needed.
 
     Example:
         >>> from aegis.agent.state import create_initial_state
@@ -335,6 +352,33 @@ async def analyze_incident(
         state["kubectl_logs"] = context.get("logs")
         state["kubectl_describe"] = context.get("describe")
         state["kubectl_events"] = context.get("events")
+
+        # Fetch Prometheus metrics for RCA enrichment
+        prom_metrics = await fetch_prometheus_metrics(
+            resource_type=resource_type,
+            resource_name=resource_name,
+            namespace=namespace,
+        )
+        if prom_metrics:
+            state["prometheus_metrics"] = prom_metrics.to_dict()
+            log.info(
+                "prometheus_metrics_enriched",
+                resource=f"{resource_type}/{resource_name}",
+                cpu=prom_metrics.cpu_usage_cores,
+                restarts=prom_metrics.restart_count,
+            )
+
+        # Generate Grafana dashboard URL with extended time range for better incident analysis
+        # Extended to 24 hours (1440 minutes) to capture longer incident history
+        grafana_url = generate_dashboard_url(
+            resource_type=resource_type,
+            resource_name=resource_name,
+            namespace=namespace,
+            time_range_minutes=1440,  # 24 hours instead of default 60 minutes
+        )
+        if grafana_url:
+            state["grafana_dashboard_url"] = grafana_url
+            log.info("grafana_url_generated", url=grafana_url)
 
     # Select workflow
     if use_checkpoint:

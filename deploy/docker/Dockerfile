@@ -61,27 +61,28 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
 # Install kubectl and vcluster CLI for shadow management
+# PINNING VERSIONS is critical for stability.
+# vCluster v0.20.0+ has different CLI behavior. We use a known stable version.
 ARG TARGETOS=linux
 ARG TARGETARCH=amd64
-ARG K8SGPT_VERSION=""
+ARG K8SGPT_VERSION="v0.3.40"
+ARG VCLUSTER_VERSION="v0.20.0"
+
 RUN curl -fL -o /usr/local/bin/kubectl \
       "https://dl.k8s.io/release/$(curl -fL -s https://dl.k8s.io/release/stable.txt)/bin/${TARGETOS}/${TARGETARCH}/kubectl" \
     && chmod +x /usr/local/bin/kubectl \
+    # Install vCluster (Pinned Version)
     && curl -fL -o /usr/local/bin/vcluster \
-      "https://github.com/loft-sh/vcluster/releases/latest/download/vcluster-${TARGETOS}-${TARGETARCH}" \
+      "https://github.com/loft-sh/vcluster/releases/download/${VCLUSTER_VERSION}/vcluster-${TARGETOS}-${TARGETARCH}" \
     && chmod +x /usr/local/bin/vcluster \
     && curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash \
+    # Install K8sGPT
     && case "${TARGETARCH}" in \
          "amd64") K8SGPT_ARCH="x86_64" ;; \
          "arm64") K8SGPT_ARCH="arm64" ;; \
          *) K8SGPT_ARCH="${TARGETARCH}" ;; \
        esac \
-    && if [[ -n "${K8SGPT_VERSION}" ]]; then \
-         K8SGPT_URL="https://github.com/k8sgpt-ai/k8sgpt/releases/download/${K8SGPT_VERSION}/k8sgpt_Linux_${K8SGPT_ARCH}.tar.gz"; \
-       else \
-         K8SGPT_URL="https://github.com/k8sgpt-ai/k8sgpt/releases/latest/download/k8sgpt_Linux_${K8SGPT_ARCH}.tar.gz"; \
-       fi \
-    && curl -fL -o /tmp/k8sgpt.tar.gz "${K8SGPT_URL}" \
+    && curl -fL -o /tmp/k8sgpt.tar.gz "https://github.com/k8sgpt-ai/k8sgpt/releases/download/${K8SGPT_VERSION}/k8sgpt_Linux_${K8SGPT_ARCH}.tar.gz" \
     && tar -xzf /tmp/k8sgpt.tar.gz -C /tmp \
     && mv /tmp/k8sgpt /usr/local/bin/k8sgpt \
     && chmod +x /usr/local/bin/k8sgpt \

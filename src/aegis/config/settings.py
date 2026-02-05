@@ -6,7 +6,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Any
 
-from pydantic import Field, field_validator
+from pydantic import AliasChoices, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -37,6 +37,8 @@ class LLMProvider(str, Enum):
     """LLM Providers"""
 
     OLLAMA = "ollama"
+    GROQ = "groq"
+    GEMINI = "gemini"
 
 
 class SandBoxRuntime(str, Enum):
@@ -113,6 +115,116 @@ class OllamaSettings(BaseSettings):
     )
 
 
+class GroqSettings(BaseSettings):
+    """Groq LLM API configuration."""
+
+    model_config = SettingsConfigDict(
+        env_prefix="GROQ_",
+        case_sensitive=False,
+    )
+
+    api_key: str | None = Field(
+        default=None,
+        description="Groq API key",
+        validation_alias=AliasChoices("GROQ_API", "GROQ_API_KEY"),
+    )
+    base_url: str = Field(
+        default="https://api.groq.com/openai/v1",
+        description="Groq API base URL",
+    )
+    model: str = Field(
+        default="llama-3.3-70b-versatile",
+        description="Default Groq model",
+    )
+    fallback_models: str = Field(
+        default="llama-3.1-8b-instant,mixtral-8x7b-32768",
+        description="Comma-separated fallback Groq models if the primary model is unavailable",
+    )
+    timeout: int = Field(
+        default=60,
+        description="Request timeout in seconds",
+        ge=1,
+    )
+    max_retries: int = Field(
+        default=2,
+        description="Max retry attempts for failed requests",
+        ge=0,
+    )
+    temperature: float = Field(
+        default=0.2,
+        description="Sampling temperature (0.0-1.0)",
+        ge=0.0,
+        le=1.0,
+    )
+    top_p: float | None = Field(
+        default=0.9,
+        description="Nucleus sampling parameter",
+        ge=0.0,
+        le=1.0,
+    )
+    enabled: bool = Field(
+        default=True,
+        description="Enable Groq as LLM provider",
+    )
+
+    def fallback_model_list(self) -> list[str]:
+        """Return fallback models as a normalized list."""
+        return [item.strip() for item in self.fallback_models.split(",") if item.strip()]
+
+
+class GeminiSettings(BaseSettings):
+    """Google Gemini LLM API configuration."""
+
+    model_config = SettingsConfigDict(
+        env_prefix="GEMINI_",
+        case_sensitive=False,
+    )
+
+    api_key: str | None = Field(
+        default=None,
+        description="Gemini API key",
+        validation_alias=AliasChoices(
+            "GOOGLE_GEMINI_API",
+            "GOOGLE_API_KEY",
+            "GEMINI_API_KEY",
+        ),
+    )
+    base_url: str = Field(
+        default="https://generativelanguage.googleapis.com/v1beta",
+        description="Gemini API base URL",
+    )
+    model: str = Field(
+        default="gemini-2.0-flash",
+        description="Default Gemini model",
+    )
+    timeout: int = Field(
+        default=60,
+        description="Request timeout in seconds",
+        ge=1,
+    )
+    max_retries: int = Field(
+        default=2,
+        description="Max retry attempts for failed requests",
+        ge=0,
+    )
+    temperature: float = Field(
+        default=0.3,
+        description="Sampling temperature (0.0-1.0)",
+        ge=0.0,
+        le=1.0,
+    )
+    top_p: float | None = Field(
+        default=0.9,
+        description="Nucleus sampling parameter",
+        ge=0.0,
+        le=1.0,
+    )
+    enabled: bool = Field(
+        default=True,
+        description="Enable Gemini as LLM provider",
+    )
+
+
 class KubernetesSettings(BaseSettings):
     """Kubernetes client and operator configuration."""
 
@@ -149,6 +261,11 @@ class KubernetesSettings(BaseSettings):
         default=30,
         description="Kubernetes API call timeout in seconds",
         ge=5,
+    )
+    k8sgpt_timeout: int = Field(
+        default=600,
+        description="K8sGPT analysis timeout in seconds (needs more time for LLM explanations, doubled when using --explain)",
+        ge=30,
     )
 
 
@@ -347,6 +464,39 @@ class ObservabilitySettings(BaseSettings):
         description="Grafana Loki push API endpoint",
     )
 
+    # Prometheus query API (for fetching metrics during RCA)
+    prometheus_query_enabled: bool = Field(
+        default=True,
+        description="Enable Prometheus metric queries for RCA enrichment",
+    )
+    prometheus_url: str = Field(
+        default="http://localhost:9090",
+        description="Prometheus server URL for querying metrics",
+    )
+    prometheus_query_timeout: int = Field(
+        default=10,
+        description="Timeout for Prometheus queries in seconds",
+        ge=1,
+    )
+
+    # Grafana dashboard integration
+    grafana_enabled: bool = Field(
+        default=True,
+        description="Enable Grafana dashboard links in analysis output",
+    )
+    grafana_url: str = Field(
+        default="http://localhost:3000",
+        description="Grafana server URL for dashboard links",
+    )
+    grafana_pod_dashboard_uid: str = Field(
+        default="pod-dashboard",
+        description="Grafana dashboard UID for pod-level metrics",
+    )
+    grafana_deployment_dashboard_uid: str = Field(
+        default="deployment-dashboard",
+        description="Grafana dashboard UID for deployment-level metrics",
+    )
+
 
 class GPUSettings(BaseSettings):
     """GPU and accelerator configuration."""
@@ -390,16 +540,44 @@ class AgentSettings(BaseSettings):
 
     # Model assignments for each agent
     rca_model: str = Field(
-        default="phi3:mini",
-        description="Model for Root Cause Analysis agent",
+        default="llama-3.3-70b-versatile",
+        description="Primary model for Root Cause Analysis agent",
     )
     solution_model: str = Field(
-        default="tinyllama:latest",
-        description="Model for Solution Generation agent",
+        default="gemini-2.0-flash",
+        description="Primary model for Solution Generation agent",
     )
     verifier_model: str = Field(
+        default="gemini-2.0-flash",
+        description="Primary model for Verification Planning agent",
+    )
+
+    # Provider assignments for each agent
+    rca_provider: LLMProvider = Field(
+        default=LLMProvider.GROQ,
+        description="Primary provider for Root Cause Analysis agent",
+    )
+    solution_provider: LLMProvider = Field(
+        default=LLMProvider.GEMINI,
+        description="Primary provider for Solution Generation agent",
+    )
+    verifier_provider: LLMProvider = Field(
+        default=LLMProvider.GEMINI,
+        description="Primary provider for Verification Planning agent",
+    )
+
+    # Ollama fallback models for each agent
+    rca_fallback_model: str = Field(
         default="phi3:mini",
-        description="Model for Verification Planning agent",
+        description="Fallback Ollama model for RCA agent",
+    )
+    solution_fallback_model: str = Field(
+        default="tinyllama:latest",
+        description="Fallback Ollama model for Solution agent",
+    )
+    verifier_fallback_model: str = Field(
+        default="phi3:mini",
+        description="Fallback Ollama model for Verifier agent",
     )
 
     # Workflow settings
@@ -512,6 +690,14 @@ class Settings(BaseSettings):
         default_factory=OllamaSettings,
         description="Ollama LLM configuration",
     )
+    groq: GroqSettings = Field(
+        default_factory=GroqSettings,
+        description="Groq LLM configuration",
+    )
+    gemini: GeminiSettings = Field(
+        default_factory=GeminiSettings,
+        description="Gemini LLM configuration",
+    )
 
     kubernetes: KubernetesSettings = Field(
         default_factory=KubernetesSettings,
@@ -566,6 +752,10 @@ class Settings(BaseSettings):
         providers = []
         if self.ollama.enabled:
             providers.append("ollama")
+        if self.groq.enabled and self.groq.api_key:
+            providers.append("groq")
+        if self.gemini.enabled and self.gemini.api_key:
+            providers.append("gemini")
         return providers
 
     # ========================================================================

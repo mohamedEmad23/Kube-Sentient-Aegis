@@ -27,9 +27,9 @@ metadata:
 type: Opaque
 stringData:
   # This is a demo secret - in real scenarios, use external secrets
-  DATABASE_URL: "postgresql://demo:demo123@demo-db:5432/demoapp"  # pragma: allowlist secret - Demo credentials for local development only
+  DATABASE_URL: "postgresql://demo:demo123@demo-db:5432/demoapp" # pragma: allowlist secret - Demo credentials for local development only
   REDIS_URL: "redis://demo-redis:6379/0"
-  API_KEY: "demo-api-key-not-for-production"  # pragma: allowlist secret - Demo API key for local testing only
+  API_KEY: "demo-api-key-not-for-production" # pragma: allowlist secret - Demo API key for local testing only
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -68,56 +68,137 @@ spec:
             - /bin/sh
             - -c
             - |
-              pip install fastapi uvicorn prometheus-client psycopg2-binary redis --quiet
+              echo "Starting up (Standard Lib Version)..."
+              mkdir -p /app
               cat > /app/main.py << 'EOF'
-              from fastapi import FastAPI, HTTPException
-              from prometheus_client import Counter, Histogram, generate_latest
-              from fastapi.responses import PlainTextResponse
+              import http.server
+              import socketserver
               import os
               import time
+              import threading
+              import json
               import random
 
-              app = FastAPI(title=os.getenv("APP_NAME", "Demo API"))
+              APP_NAME = os.getenv("APP_NAME", "Demo API")
+              PORT = 8000
 
-              # Metrics
-              REQUEST_COUNT = Counter("http_requests_total", "Total HTTP requests", ["method", "endpoint", "status"])
-              REQUEST_LATENCY = Histogram("http_request_duration_seconds", "HTTP request latency", ["endpoint"])
+              # Simple Metrics Store
+              metrics = {
+                  "http_requests_total": {},
+                  "http_request_duration_seconds_sum": {},
+                  "http_request_duration_seconds_count": {}
+              }
 
-              # Validate required env vars on startup
-              required_vars = ["DATABASE_URL", "REDIS_URL"]
-              for var in required_vars:
-                  if not os.getenv(var):
-                      raise RuntimeError(f"Missing required environment variable: {var}")
+              def inc_counter(name, labels):
+                  key = tuple(sorted(labels.items()))
+                  if key not in metrics[name]:
+                      metrics[name][key] = 0.0
+                  metrics[name][key] += 1.0
 
-              @app.get("/")
-              async def root():
-                  REQUEST_COUNT.labels(method="GET", endpoint="/", status="200").inc()
-                  return {"status": "healthy", "app": os.getenv("APP_NAME")}
+              def observe_histogram(name, labels, value):
+                  # Simple sum/count for histogram
+                  key = tuple(sorted(labels.items()))
 
-              @app.get("/health")
-              async def health():
-                  return {"status": "ok", "timestamp": time.time()}
+                  sum_name = f"{name}_sum"
+                  count_name = f"{name}_count"
 
-              @app.get("/ready")
-              async def ready():
-                  # Simulate readiness check
-                  return {"ready": True, "database": "connected", "redis": "connected"}
+                  if key not in metrics[sum_name]:
+                      metrics[sum_name][key] = 0.0
+                  if key not in metrics[count_name]:
+                      metrics[count_name][key] = 0.0
 
-              @app.get("/api/items")
-              async def get_items():
-                  with REQUEST_LATENCY.labels(endpoint="/api/items").time():
-                      # Simulate database query
-                      time.sleep(random.uniform(0.01, 0.05))
-                      REQUEST_COUNT.labels(method="GET", endpoint="/api/items", status="200").inc()
-                      return {"items": [{"id": 1, "name": "Demo Item"}]}
+                  metrics[sum_name][key] += value
+                  metrics[count_name][key] += 1.0
 
-              @app.get("/metrics")
-              async def metrics():
-                  return PlainTextResponse(generate_latest(), media_type="text/plain")
+              class DemoHandler(http.server.BaseHTTPRequestHandler):
+                  def do_GET(self):
+                      start_time = time.time()
+                      status = 200
+
+                      try:
+                          if self.path == "/":
+                              self.send_response(200)
+                              self.send_header("Content-type", "application/json")
+                              self.end_headers()
+                              response = {"status": "healthy", "app": APP_NAME}
+                              self.wfile.write(json.dumps(response).encode())
+
+                          elif self.path == "/health":
+                              self.send_response(200)
+                              self.send_header("Content-type", "application/json")
+                              self.end_headers()
+                              response = {"status": "ok", "timestamp": time.time()}
+                              self.wfile.write(json.dumps(response).encode())
+
+                          elif self.path == "/ready":
+                              self.send_response(200)
+                              self.send_header("Content-type", "application/json")
+                              self.end_headers()
+                              response = {"ready": True, "database": "connected", "redis": "connected"}
+                              self.wfile.write(json.dumps(response).encode())
+
+                          elif self.path == "/api/items":
+                              # Simulate DB latency
+                              time.sleep(random.uniform(0.01, 0.05))
+                              self.send_response(200)
+                              self.send_header("Content-type", "application/json")
+                              self.end_headers()
+                              response = {"items": [{"id": 1, "name": "Demo Item"}]}
+                              self.wfile.write(json.dumps(response).encode())
+
+                          elif self.path == "/metrics":
+                              self.send_response(200)
+                              self.send_header("Content-type", "text/plain")
+                              self.end_headers()
+
+                              # Generate Prometheus format
+                              output = []
+
+                              # Counter
+                              output.append("# HELP http_requests_total Total HTTP requests")
+                              output.append("# TYPE http_requests_total counter")
+                              for key, value in metrics["http_requests_total"].items():
+                                  label_str = ",".join([f'{k}="{v}"' for k, v in key])
+                                  output.append(f'http_requests_total{{{label_str}}} {value}')
+
+                              # Histogram (simplified)
+                              output.append("# HELP http_request_duration_seconds HTTP request latency")
+                              output.append("# TYPE http_request_duration_seconds histogram")
+                              for name in ["http_request_duration_seconds_sum", "http_request_duration_seconds_count"]:
+                                  for key, value in metrics[name].items():
+                                      label_str = ",".join([f'{k}="{v}"' for k, v in key])
+                                      output.append(f'{name}{{{label_str}}} {value}')
+
+                              self.wfile.write("\n".join(output).encode())
+                              return # Don't record metrics for metrics endpoint
+
+                          else:
+                              self.send_response(404)
+                              self.end_headers()
+                              status = 404
+
+                          # Record metrics
+                          duration = time.time() - start_time
+                          labels = {"method": "GET", "endpoint": self.path, "status": str(status)}
+                          inc_counter("http_requests_total", labels)
+
+                          # Histogram labels usually less cardinality
+                          hist_labels = {"endpoint": self.path}
+                          observe_histogram("http_request_duration_seconds", hist_labels, duration)
+
+                      except Exception as e:
+                          print(f"Error: {e}")
+                          if not self.wfile.closed:
+                              self.send_response(500)
+                              self.end_headers()
+
+              class ThreadedHTTPServer(socketserver.ThreadingMixIn, http.server.HTTPServer):
+                  daemon_threads = True
 
               if __name__ == "__main__":
-                  import uvicorn
-                  uvicorn.run(app, host="0.0.0.0", port=8000)
+                  print(f"Starting {APP_NAME} on port {PORT}")
+                  server = ThreadedHTTPServer(('0.0.0.0', PORT), DemoHandler)
+                  server.serve_forever()
               EOF
               python /app/main.py
           ports:
@@ -140,7 +221,7 @@ spec:
             httpGet:
               path: /health
               port: 8000
-            initialDelaySeconds: 30
+            initialDelaySeconds: 5
             periodSeconds: 10
             timeoutSeconds: 5
             failureThreshold: 3

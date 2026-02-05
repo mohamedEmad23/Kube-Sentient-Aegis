@@ -76,6 +76,18 @@ class SecurityPipeline:
         self._kubesec = KubesecScanner()
         self._trivy = TrivyScanner()
         self._falco = FalcoMonitor()
+        if not any(
+            [
+                settings.security.trivy_enabled,
+                settings.security.kubesec_enabled,
+                settings.security.zap_enabled,
+                settings.security.falco_enabled,
+            ]
+        ):
+            log.warning(
+                "security_scans_disabled_demo_mode",
+                reminder="TEMPORARY DEMO MODE - re-enable security scans after the demo.",
+            )
 
     async def scan_manifests(
         self,

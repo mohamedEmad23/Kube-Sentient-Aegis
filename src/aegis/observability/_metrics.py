@@ -78,8 +78,8 @@ agent_iterations_total = Counter(
 
 llm_requests_total = Counter(
     name="llm_requests_total",
-    documentation="Total number of LLM requests to Ollama",
-    labelnames=["model", "status"],
+    documentation="Total number of LLM requests",
+    labelnames=["model", "provider", "status"],
     registry=registry,
     namespace=settings.observability.metrics_namespace,
 )
@@ -104,6 +104,63 @@ operator_reconciliations_total = Counter(
     name="operator_reconciliations_total",
     documentation="Total number of operator reconciliation attempts",
     labelnames=["resource_type", "status"],
+    registry=registry,
+    namespace=settings.observability.metrics_namespace,
+)
+
+# Enhanced Incident Response Metrics
+
+rollbacks_total = Counter(
+    name="rollbacks_total",
+    documentation="Total number of automatic rollbacks executed",
+    labelnames=["resource_type", "namespace", "reason"],
+    registry=registry,
+    namespace=settings.observability.metrics_namespace,
+)
+
+shadow_retries_total = Counter(
+    name="shadow_retries_total",
+    documentation="Total number of shadow verification retries",
+    labelnames=["outcome", "attempt"],  # outcome: success/failure, attempt: 1/2/3
+    registry=registry,
+    namespace=settings.observability.metrics_namespace,
+)
+
+drift_detections_total = Counter(
+    name="drift_detections_total",
+    documentation="Total number of drift detections between prod/shadow",
+    labelnames=["severity"],  # none/low/high
+    registry=registry,
+    namespace=settings.observability.metrics_namespace,
+)
+
+security_blocks_total = Counter(
+    name="security_blocks_total",
+    documentation="Total number of deployments blocked by security scans",
+    labelnames=["scan_type", "severity"],  # kubesec/trivy/falco, CRITICAL/HIGH
+    registry=registry,
+    namespace=settings.observability.metrics_namespace,
+)
+
+production_approvals_total = Counter(
+    name="production_approvals_total",
+    documentation="Total number of production approval decisions",
+    labelnames=["decision", "namespace"],  # yes/no/timeout
+    registry=registry,
+    namespace=settings.observability.metrics_namespace,
+)
+
+incident_queue_enqueued_total = Counter(
+    name="incident_queue_enqueued_total",
+    documentation="Total incidents enqueued",
+    labelnames=["priority"],  # p0/p1/p2/p3/p4
+    registry=registry,
+    namespace=settings.observability.metrics_namespace,
+)
+
+incident_queue_correlated_total = Counter(
+    name="incident_queue_correlated_total",
+    documentation="Total incidents deduplicated via correlation",
     registry=registry,
     namespace=settings.observability.metrics_namespace,
 )
@@ -139,6 +196,21 @@ shadow_environments_active = Gauge(
 agent_workflow_in_progress = Gauge(
     name="agent_workflow_in_progress",
     documentation="Number of agent workflows currently in progress",
+    registry=registry,
+    namespace=settings.observability.metrics_namespace,
+)
+
+incident_queue_depth = Gauge(
+    name="incident_queue_depth",
+    documentation="Current incident queue depth",
+    labelnames=["priority"],  # p0/p1/p2/p3/p4
+    registry=registry,
+    namespace=settings.observability.metrics_namespace,
+)
+
+production_locked = Gauge(
+    name="production_locked",
+    documentation="Production deployment lock status (1=locked, 0=unlocked)",
     registry=registry,
     namespace=settings.observability.metrics_namespace,
 )
@@ -202,8 +274,24 @@ shadow_load_test_duration_seconds = Histogram(
 llm_request_duration_seconds = Histogram(
     name="llm_request_duration_seconds",
     documentation="LLM request duration in seconds",
-    labelnames=["model"],
+    labelnames=["model", "provider"],
     buckets=[0.1, 0.5, 1.0, 2.0, 5.0, 10.0, 30.0, 60.0],
+    registry=registry,
+    namespace=settings.observability.metrics_namespace,
+)
+
+rollback_duration_seconds = Histogram(
+    name="rollback_duration_seconds",
+    documentation="Time taken to execute rollback",
+    buckets=[1.0, 5.0, 10.0, 30.0, 60.0, 120.0],
+    registry=registry,
+    namespace=settings.observability.metrics_namespace,
+)
+
+drift_detection_duration_seconds = Histogram(
+    name="drift_detection_duration_seconds",
+    documentation="Time taken for drift detection",
+    buckets=[1.0, 5.0, 10.0, 30.0, 60.0],
     registry=registry,
     namespace=settings.observability.metrics_namespace,
 )
@@ -226,7 +314,7 @@ def initialize_metrics() -> None:
     shadow_smoke_tests_total.labels(result="passed", target="service")
     shadow_load_tests_total.labels(result="passed", target="service")
     agent_iterations_total.labels(agent_name="rca_agent", status="completed")
-    llm_requests_total.labels(model="phi3:mini", status="success")
+    llm_requests_total.labels(model="phi3:mini", provider="ollama", status="success")
     k8sgpt_analyses_total.labels(resource_type="pod", problems_found="0")
     operator_errors_total.labels(component="operator", error_type="general")
     operator_reconciliations_total.labels(resource_type="pod", status="success")

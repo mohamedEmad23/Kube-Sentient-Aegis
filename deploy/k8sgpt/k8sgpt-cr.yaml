@@ -81,7 +81,7 @@ spec:
   noCache: false
 
   # Repository for custom analyzers (optional)
-  repository: ""
+  repository: "ghcr.io/k8sgpt-ai/k8sgpt"
 
 
 ---

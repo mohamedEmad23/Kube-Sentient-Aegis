@@ -94,11 +94,20 @@ class K8sGPTAnalyzer:
                 cmd.append("--explain")
                 cmd.extend([f"--backend={self.backend}"])
 
+            # Use much higher timeout when LLM explanation is enabled
+            # LLM processing (especially with Ollama) can take 5-10 minutes per resource
+            timeout = (
+                settings.kubernetes.k8sgpt_timeout * 2
+                if explain
+                else settings.kubernetes.k8sgpt_timeout
+            )
+
             log.debug(
                 "running_k8sgpt",
                 command=" ".join(cmd),
                 resource=f"{resource_type}/{resource_name}",
                 filter=filter_value,
+                timeout=timeout,
             )
 
             process = await asyncio.create_subprocess_exec(
@@ -110,13 +119,13 @@ class K8sGPTAnalyzer:
             try:
                 stdout, stderr = await asyncio.wait_for(
                     process.communicate(),
-                    timeout=settings.kubernetes.api_timeout,
+                    timeout=timeout,
                 )
             except TimeoutError:
-                log.exception("k8sgpt_timeout", timeout=settings.kubernetes.api_timeout)
+                log.exception("k8sgpt_timeout", timeout=timeout, explain=explain)
                 process.kill()
                 await process.wait()
-                raise RuntimeError("K8sGPT analysis timed out") from None
+                raise RuntimeError(f"K8sGPT analysis timed out after {timeout}s") from None
 
             if process.returncode != 0:
                 log.error(

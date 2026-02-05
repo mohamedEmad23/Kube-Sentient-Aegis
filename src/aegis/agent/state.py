@@ -8,6 +8,7 @@ Defines typed state structures for the multi-agent incident analysis workflow:
 - VerificationPlan: Shadow verification planning output
 """
 
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from enum import Enum
 from typing import Annotated, Any, Literal
@@ -51,6 +52,105 @@ class FixType(str, Enum):
     ROLLBACK = "rollback"
     PATCH = "patch"
     MANUAL = "manual"
+
+
+class IncidentPriority(str, Enum):
+    """Incident priority levels for queue management.
+
+    P0 (Critical) - Service-wide outage, data loss risk
+    P1 (High) - Major feature broken, significant user impact
+    P2 (Medium) - Minor feature degradation
+    P3 (Low) - Performance issues, non-critical bugs
+    P4 (Info) - Informational, no immediate action needed
+    """
+
+    P0 = "p0"  # Critical
+    P1 = "p1"  # High
+    P2 = "p2"  # Medium
+    P3 = "p3"  # Low
+    P4 = "p4"  # Info
+
+    @classmethod
+    def from_severity(cls, severity: IncidentSeverity) -> "IncidentPriority":
+        """Map incident severity to priority.
+
+        Args:
+            severity: IncidentSeverity from RCA analysis
+
+        Returns:
+            IncidentPriority: Corresponding priority level
+        """
+        mapping = {
+            IncidentSeverity.CRITICAL: cls.P0,
+            IncidentSeverity.HIGH: cls.P1,
+            IncidentSeverity.MEDIUM: cls.P2,
+            IncidentSeverity.LOW: cls.P3,
+            IncidentSeverity.INFO: cls.P4,
+        }
+        return mapping.get(severity, cls.P3)
+
+
+# ============================================================================
+# Dataclasses - Retry & Rollback Metadata
+# ============================================================================
+
+
+@dataclass
+class RetryContext:
+    """Context for shadow verification retry logic."""
+
+    attempt: int = 1  # Current attempt (1-indexed)
+    max_retries: int = 3  # Maximum retry attempts
+    last_failure_reason: str | None = None  # Detailed failure context
+    backoff_seconds: float = 10.0  # Exponential backoff base
+
+    def should_retry(self) -> bool:
+        """Check if another retry is allowed."""
+        return self.attempt < self.max_retries
+
+    def next_backoff(self) -> float:
+        """Calculate next exponential backoff delay.
+
+        Returns:
+            Delay in seconds: 10s, 30s, 90s for attempts 1, 2, 3
+        """
+        return self.backoff_seconds * (3 ** (self.attempt - 1))
+
+
+@dataclass
+class RollbackMetadata:
+    """Metadata for production deployment rollback."""
+
+    pre_deployment_snapshot: dict[str, Any] = field(default_factory=dict)
+    deployment_timestamp: datetime | None = None
+    baseline_error_rate: float = 0.0  # Error rate before deployment
+    baseline_restart_count: int = 0  # Pod restarts before deployment
+    rollback_triggered: bool = False
+    rollback_reason: str | None = None
+    rollback_timestamp: datetime | None = None
+
+
+@dataclass
+class DriftReport:
+    """Environment drift detection between production and shadow."""
+
+    drifted: bool = False
+    severity: Literal["none", "low", "high"] = "none"
+    missing_resources: list[str] = field(default_factory=list)  # In prod, not shadow
+    extra_resources: list[str] = field(default_factory=list)  # In shadow, not prod
+    config_mismatches: list[dict[str, Any]] = field(default_factory=list)
+    timestamp: datetime = field(default_factory=lambda: datetime.now(UTC))
+
+    def to_dict(self) -> dict[str, Any]:
+        """Convert to dict for storage."""
+        return {
+            "drifted": self.drifted,
+            "severity": self.severity,
+            "missing_resources": self.missing_resources,
+            "extra_resources": self.extra_resources,
+            "config_mismatches": self.config_mismatches,
+            "timestamp": self.timestamp.isoformat(),
+        }
 
 
 # ============================================================================
@@ -269,10 +369,26 @@ class IncidentState(TypedDict):
     # Messages aggregated across agents using add_messages reducer
     messages: Annotated[list[AnyMessage], add_messages]
 
+    # ========== LLM Trace ==========
+    llm_trace: dict[str, dict[str, str]] | None  # Provider/model per agent
+
     # ========== Optional: Shadow Verification Results ==========
     shadow_env_id: str | None  # Shadow environment identifier
     shadow_test_passed: bool | None  # Shadow verification result
     shadow_logs: str | None  # Shadow environment logs
+
+    # ========== Prometheus Metrics Context (Dashboard Integration) ==========
+    prometheus_metrics: dict[str, Any] | None  # Metrics from Prometheus query client
+    grafana_dashboard_url: str | None  # Generated Grafana dashboard URL
+
+    # ========== Enhanced Incident Management ==========
+    incident_id: str | None  # Unique incident identifier for correlation
+    priority: IncidentPriority | None  # Priority level (P0-P4)
+    retry_context: dict[str, Any] | None  # RetryContext serialized
+    rollback_metadata: dict[str, Any] | None  # RollbackMetadata serialized
+    drift_report: dict[str, Any] | None  # DriftReport serialized
+    production_approved: bool | None  # Human approval for production deployment
+    production_deployed_at: datetime | None  # When fix was applied to production
 
 
 # ============================================================================
@@ -316,16 +432,29 @@ def create_initial_state(
         no_problems=None,
         completed_at=None,
         messages=[],
+        llm_trace={},
         shadow_env_id=None,
         shadow_test_passed=None,
         shadow_logs=None,
+        prometheus_metrics=None,
+        grafana_dashboard_url=None,
+        # Enhanced fields
+        incident_id=None,
+        priority=None,
+        retry_context=None,
+        rollback_metadata=None,
+        drift_report=None,
+        production_approved=None,
+        production_deployed_at=None,
     )
 
 
 __all__ = [
     "AgentNode",
+    "DriftReport",
     "FixProposal",
     "FixType",
+    "IncidentPriority",
     "IncidentSeverity",
     "IncidentState",
     "K8sGPTAnalysis",
@@ -333,6 +462,8 @@ __all__ = [
     "K8sGPTResult",
     "LoadTestConfig",
     "RCAResult",
+    "RetryContext",
+    "RollbackMetadata",
     "VerificationPlan",
     "create_initial_state",
 ]
