@@ -14,12 +14,11 @@
 </p>
 
 <p align="center">
-  <img src="https://img.icons8.com/3d-fluency/94/python.png" width="54" alt="Python" />
-  <img src="https://img.icons8.com/3d-fluency/94/kubernetes.png" width="54" alt="Kubernetes" />
-  <img src="https://img.icons8.com/3d-fluency/94/docker.png" width="54" alt="Docker" />
-  <img src="https://img.icons8.com/3d-fluency/94/artificial-intelligence.png" width="54" alt="AI" />
-  <img src="https://img.icons8.com/3d-fluency/94/combo-chart.png" width="54" alt="Observability" />
-  <img src="https://img.icons8.com/3d-fluency/94/security-shield-green.png" width="54" alt="Security" />
+  <img src="https://skillicons.dev/icons?i=python,kubernetes,docker,prometheus,grafana&perline=5" alt="Python, Kubernetes, Docker, Prometheus, Grafana" />
+</p>
+
+<p align="center">
+  <sub><strong>Python</strong> • <strong>Kubernetes</strong> • <strong>Docker</strong> • <strong>AI Agents</strong> • <strong>Observability</strong> • <strong>Security</strong></sub>
 </p>
 
 ## Objective
