@@ -1,0 +1,159 @@
+# See https://pre-commit.com for more information
+# See https://pre-commit.com/hooks.html for more hooks
+
+default_language_version:
+  python: python3.12
+
+default_stages: [pre-commit]
+
+ci:
+  autofix_commit_msg: |
+    [pre-commit.ci] auto fixes from pre-commit hooks
+  autofix_prs: true
+  autoupdate_branch: ''
+  autoupdate_commit_msg: '[pre-commit.ci] pre-commit autoupdate'
+  autoupdate_schedule: weekly
+  skip: [pytest-check]  # Skip tests in CI pre-commit
+  submodules: false
+
+repos:
+  # General file fixes (Python files only)
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: trailing-whitespace
+        types: [python]
+      - id: end-of-file-fixer
+        types: [python]
+      - id: check-yaml
+        args: [--unsafe]  # Allow custom YAML tags for K8s
+        exclude: ^(docs/|\.vscode/|README\.md|.*\.md|deploy/helm/.*)
+      - id: check-toml
+        exclude: ^(docs/|\.vscode/|README\.md|.*\.md)
+      - id: check-json
+        exclude: ^\.vscode/
+      - id: check-added-large-files
+        args: [--maxkb=1000]
+      - id: check-case-conflict
+      - id: check-merge-conflict
+      - id: check-symlinks
+      - id: check-executables-have-shebangs
+      - id: check-shebang-scripts-are-executable
+      - id: detect-private-key
+      - id: mixed-line-ending
+        args: [--fix=lf]
+      - id: no-commit-to-branch
+        args: [--branch, main]
+
+  # Ruff - Fast Python linter and formatter (replaces black, isort, flake8, etc.)
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.9.7
+    hooks:
+      # Run the linter first
+      - id: ruff
+        args: [--fix, --exit-non-zero-on-fix]
+        types_or: [python, pyi]
+      # Run the formatter
+      - id: ruff-format
+        types_or: [python, pyi]
+
+  # Type checking with mypy
+  - repo: https://github.com/pre-commit/mirrors-mypy
+    rev: v1.15.0
+    hooks:
+      - id: mypy
+        additional_dependencies:
+          - kopf>=1.37.2
+          - pydantic>=2.10.0
+          - pydantic-settings>=2.0.0
+          - types-requests
+          - types-PyYAML
+          - types-aiofiles
+        args: [--config-file=pyproject.toml]
+        pass_filenames: false
+        entry: mypy src/
+
+  # Security: detect secrets in code
+  - repo: https://github.com/Yelp/detect-secrets
+    rev: v1.5.0
+    hooks:
+      - id: detect-secrets
+        args:
+          - --baseline
+          - .secrets.baseline
+        exclude: |
+          (?x)^(
+            .*\.lock$|
+            .*\.md$|
+            \.secrets\.baseline$|
+            tests/fixtures/.*
+          )$
+
+  # Security: bandit for security issues
+  - repo: https://github.com/PyCQA/bandit
+    rev: 1.8.3
+    hooks:
+      - id: bandit
+        args: [-c, pyproject.toml, -r, src/]
+        additional_dependencies: ["bandit[toml]"]
+
+  # Dockerfile linting (dual-mode: local binary or Docker fallback)
+  # See scripts/hadolint-check.sh for implementation details
+  - repo: local
+    hooks:
+      - id: hadolint
+        name: Lint Dockerfiles (hadolint)
+        entry: ./scripts/hadolint-check.sh
+        language: script
+        types: [dockerfile]
+        pass_filenames: true
+
+  # Shell script linting
+  - repo: https://github.com/shellcheck-py/shellcheck-py
+    rev: v0.10.0.1
+    hooks:
+      - id: shellcheck
+        args: [--severity=warning]
+
+  # Markdown linting (disabled - excluded from pre-commit)
+  # - repo: https://github.com/igorshubovych/markdownlint-cli
+  #   rev: v0.44.0
+  #   hooks:
+  #     - id: markdownlint
+  #       args: [--fix, --disable, MD013, MD033, MD041, --]
+
+  # Helm chart linting (if helm is installed)
+  - repo: local
+    hooks:
+      - id: helm-lint
+        name: Helm Lint
+        entry: bash -c 'command -v helm >/dev/null 2>&1 && helm lint deploy/helm/aegis/ || echo "Helm not installed, skipping..."'
+        language: system
+        files: ^deploy/helm/
+        pass_filenames: false
+        always_run: false
+
+  # Terraform formatting (if terraform is installed)
+  - repo: local
+    hooks:
+      - id: terraform-fmt
+        name: Terraform Format
+        entry: bash -c 'command -v terraform >/dev/null 2>&1 && terraform fmt -recursive deploy/terraform/ || echo "Terraform not installed, skipping..."'
+        language: system
+        files: ^deploy/terraform/.*\.tf$
+        pass_filenames: false
+        always_run: false
+
+  # Commit message linting
+  - repo: https://github.com/commitizen-tools/commitizen
+    rev: v4.4.1
+    hooks:
+      - id: commitizen
+        stages: [commit-msg]
+
+  # Poetry/pyproject.toml validation
+  - repo: https://github.com/abravalheri/validate-pyproject
+    rev: v0.23
+    hooks:
+      - id: validate-pyproject
+        additional_dependencies: ["validate-pyproject-schema-store[all]"]

@@ -1,0 +1,95 @@
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+    █████╗ ███████╗ ██████╗ ██╗███████╗
+   ██╔══██╗██╔════╝██╔════╝ ██║██╔════╝
+   ███████║█████╗  ██║  ███╗██║███████╗
+   ██╔══██║██╔══╝  ██║   ██║██║╚════██║
+   ██║  ██║███████╗╚██████╔╝██║███████║
+   ╚═╝  ╚═╝╚══════╝ ╚═════╝ ╚═╝╚══════╝
+
+   Autonomous Engine for Guided Incident Solving
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Thank you for installing {{ .Chart.Name }}!
+
+🚀 AEGIS Operator has been deployed to namespace: {{ include "aegis.namespace" . }}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+PREREQUISITES
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+1. K8sGPT Operator (REQUIRED)
+   AEGIS integrates with K8sGPT for incident detection.
+   Install K8sGPT if not already installed:
+
+   helm repo add k8sgpt https://charts.k8sgpt.ai/
+   helm install k8sgpt k8sgpt/k8sgpt-operator -n k8sgpt-system --create-namespace
+
+2. Ollama (REQUIRED for LLM inference)
+   AEGIS uses Ollama for RCA and solution generation.
+   Configure the Ollama URL in values.yaml:
+
+   ollama:
+     baseUrl: "http://ollama.<namespace>.svc.cluster.local:11434"
+     model: "llama3.2"
+
+3. vCluster CLI (REQUIRED for shadow verification)
+   Shadow environments use vCluster for isolation.
+   Install vCluster CLI: https://www.vcluster.com/docs/getting-started/setup
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+VERIFY INSTALLATION
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Check operator status:
+  kubectl get pods -n {{ include "aegis.namespace" . }}
+
+Check operator logs:
+  kubectl logs -n {{ include "aegis.namespace" . }} -l app.kubernetes.io/name={{ include "aegis.name" . }} -f
+
+Check AEGIS CRDs:
+  kubectl get crd | grep aegis.io
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+USING AEGIS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+📊 View detected incidents:
+  kubectl get incidents -A
+
+📋 Describe an incident:
+  kubectl describe incident <incident-name> -n <namespace>
+
+✅ Approve a fix:
+  aegis incident approve <incident-name> -n <namespace>
+
+❌ Reject a fix:
+  aegis incident reject <incident-name> -n <namespace> --reason "not safe"
+
+🔍 Analyze a resource manually:
+  aegis analyze deployment/my-app -n production
+
+🌐 Create a shadow environment:
+  aegis shadow create deployment/my-app -n production --wait
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+CONFIGURATION
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Approval timeout: {{ .Values.config.incident.approvalTimeoutMinutes }} minutes
+Post-fix monitoring: {{ .Values.config.incident.postFixMonitoringSeconds }} seconds
+Max concurrent shadows: {{ .Values.config.shadow.maxConcurrent }}
+
+Edit configuration:
+  helm upgrade {{ .Release.Name }} aegis/aegis -n {{ include "aegis.namespace" . }} -f values.yaml
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+DOCUMENTATION
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+📚 Full documentation: https://github.com/mohamedEmad23/Kube-Sentient-Aegis
+📖 Security Guide: docs/SECURITY_ENGINEER_GUIDE.md
+🔧 Testing Guide: docs/TESTING_GUIDE.md
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━

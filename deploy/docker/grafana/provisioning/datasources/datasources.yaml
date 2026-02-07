@@ -1,0 +1,41 @@
+# deploy/docker/grafana/provisioning/datasources/datasources.yaml
+# Auto-provision Prometheus and Loki datasources
+
+apiVersion: 1
+
+datasources:
+  # ============ Prometheus ============
+  - name: Prometheus
+    type: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
+    editable: true
+    jsonData:
+      timeInterval: '15s'
+      queryTimeout: '60s'
+      httpMethod: 'POST'
+      incrementalQuerying: true
+      incrementalQueryOverlapWindow: '10m'
+    version: 1
+
+  # ============ Loki ============
+  - name: Loki
+    type: loki
+    access: proxy
+    url: http://loki:3100
+    editable: true
+    jsonData:
+      maxLines: 1000
+      derivedFields:
+        # Link incident_id to Prometheus
+        - datasourceUid: 'prometheus'
+          matcherRegex: '"incident_id":"([^"]+)"'
+          name: 'incident_id'
+          url: '/explore?left=["now-1h","now","Prometheus",{"expr":"aegis_incidents_detected_total{incident_id=\"$${__value.raw}\"}"}]'
+
+        # Link trace_id to Tempo (if you add distributed tracing later)
+        - matcherRegex: '"trace_id":"([^"]+)"'
+          name: 'trace_id'
+          url: '/explore?left=["now-1h","now","Tempo",{"query":"$${__value.raw}"}]'
+    version: 1

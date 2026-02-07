@@ -1,0 +1,54 @@
+# AEGIS Helm Chart
+# Production-ready Kubernetes Operator for Autonomous Incident Response
+
+apiVersion: v2
+name: aegis
+description: |
+  AEGIS (Autonomous Engine for Guided Incident Solving) - An AI-powered
+  Kubernetes operator that provides autonomous incident detection, root cause
+  analysis, and remediation with human-in-the-loop approval.
+
+type: application
+
+# Chart version follows semver
+version: 0.1.0
+
+# AEGIS application version
+appVersion: "0.1.0"
+
+# Minimum supported Kubernetes version
+kubeVersion: ">=1.25.0"
+
+# Chart maintainers
+maintainers:
+  - name: AEGIS Team
+
+# Keywords for chart discovery
+keywords:
+  - aegis
+  - kubernetes
+  - operator
+  - sre
+  - incident-response
+  - auto-remediation
+  - ai
+  - llm
+  - k8sgpt
+
+# Chart home and sources
+home: https://github.com/mohamedEmad23/Kube-Sentient-Aegis
+sources:
+  - https://github.com/mohamedEmad23/Kube-Sentient-Aegis
+
+# Dependencies
+# NOTE: K8sGPT is a prerequisite but NOT bundled to avoid version coupling
+# Install separately: helm install k8sgpt k8sgpt/k8sgpt-operator
+dependencies: []
+
+# Annotations for ArtifactHub and tooling
+annotations:
+  artifacthub.io/prerelease: "true"
+  artifacthub.io/license: Apache-2.0
+  artifacthub.io/operator: "true"
+  artifacthub.io/operatorCapabilities: Full Lifecycle
+  artifacthub.io/category: monitoring-logging

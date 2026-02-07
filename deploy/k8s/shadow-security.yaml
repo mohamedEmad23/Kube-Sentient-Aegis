@@ -1,0 +1,148 @@
+# Security policies for AEGIS Shadow Environment namespace
+# Apply these to the aegis-shadows namespace to limit resource usage
+# and isolate shadow environments from production namespaces.
+#
+# Usage:
+#   kubectl apply -f shadow-security.yaml
+#   # Or create the namespace first:
+#   kubectl create namespace aegis-shadows
+#   kubectl apply -f shadow-security.yaml
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: aegis-shadows
+  labels:
+    app.kubernetes.io/name: aegis
+    app.kubernetes.io/component: shadow-environments
+    aegis.io/shadow: "true"
+    aegis.io/managed-by: aegis-operator
+---
+# ResourceQuota: Limit total resources for shadow environments
+# Prevents resource exhaustion from shadow verification workloads
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: aegis-shadow-quota
+  namespace: aegis-shadows
+  labels:
+    app.kubernetes.io/name: aegis
+    app.kubernetes.io/component: shadow-environments
+spec:
+  hard:
+    # Limit total CPU to 4 cores for all shadow environments combined
+    requests.cpu: "4"
+    limits.cpu: "8"
+    # Limit total memory to 8Gi for all shadow environments combined
+    requests.memory: "4Gi"
+    limits.memory: "8Gi"
+    # Limit total number of pods to prevent pod spam
+    pods: "20"
+    # Limit number of services and configmaps
+    services: "10"
+    configmaps: "20"
+    secrets: "10"
+    # Limit PVC creation to prevent storage exhaustion
+    persistentvolumeclaims: "5"
+    requests.storage: "10Gi"
+---
+# LimitRange: Set default resource limits for pods in shadow namespace
+# Ensures individual pods don't consume excessive resources
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: aegis-shadow-limits
+  namespace: aegis-shadows
+  labels:
+    app.kubernetes.io/name: aegis
+    app.kubernetes.io/component: shadow-environments
+spec:
+  limits:
+    - type: Container
+      default:
+        cpu: "500m"
+        memory: "512Mi"
+      defaultRequest:
+        cpu: "100m"
+        memory: "128Mi"
+      max:
+        cpu: "2"
+        memory: "2Gi"
+      min:
+        cpu: "50m"
+        memory: "64Mi"
+    - type: Pod
+      max:
+        cpu: "4"
+        memory: "4Gi"
+---
+# NetworkPolicy: Isolate shadow environments from production namespaces
+# Only allows traffic within the shadow namespace and to required external services
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: aegis-shadow-isolation
+  namespace: aegis-shadows
+  labels:
+    app.kubernetes.io/name: aegis
+    app.kubernetes.io/component: shadow-environments
+spec:
+  # Apply to all pods in the aegis-shadows namespace
+  podSelector: {}
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    # Allow ingress from within the same namespace (shadow-to-shadow)
+    - from:
+        - podSelector: {}
+    # Allow ingress from aegis-operator namespace for health checks
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              app.kubernetes.io/name: aegis
+  egress:
+    # Allow egress within the same namespace (shadow-to-shadow)
+    - to:
+        - podSelector: {}
+    # Allow DNS resolution (required for service discovery)
+    - to:
+        - namespaceSelector: {}
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    # Allow egress to Kubernetes API server (required for vCluster)
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+      ports:
+        - protocol: TCP
+          port: 443
+        - protocol: TCP
+          port: 6443
+---
+# NetworkPolicy: Deny all ingress from external namespaces by default
+# This is a fallback deny-all policy for defense in depth
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: aegis-shadow-deny-external
+  namespace: aegis-shadows
+  labels:
+    app.kubernetes.io/name: aegis
+    app.kubernetes.io/component: shadow-environments
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+  ingress:
+    # Only allow traffic from pods with aegis.io/shadow label
+    - from:
+        - podSelector:
+            matchLabels:
+              aegis.io/shadow: "true"

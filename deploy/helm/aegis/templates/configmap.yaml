@@ -1,0 +1,48 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "aegis.configMapName" . }}
+  namespace: {{ include "aegis.namespace" . }}
+  labels:
+    {{- include "aegis.labels" . | nindent 4 }}
+data:
+  # Environment settings
+  ENVIRONMENT: {{ .Values.config.environment | quote }}
+  DEBUG: {{ .Values.config.debug | quote }}
+
+  # Shadow verification settings
+  SHADOW_ENABLED: {{ .Values.config.shadow.enabled | quote }}
+  SHADOW_RUNTIME: {{ .Values.config.shadow.runtime | quote }}
+  SHADOW_NAMESPACE_PREFIX: {{ .Values.config.shadow.namespacePrefix | quote }}
+  SHADOW_MAX_CONCURRENT_SHADOWS: {{ .Values.config.shadow.maxConcurrent | quote }}
+  SHADOW_VERIFICATION_TIMEOUT: {{ .Values.config.shadow.verificationTimeout | quote }}
+  SHADOW_AUTO_CLEANUP: {{ .Values.config.shadow.autoCleanup | quote }}
+
+  # Incident management settings
+  INCIDENT_AUTO_FIX_ENABLED: {{ .Values.config.incident.autoFixEnabled | quote }}
+  INCIDENT_APPROVAL_TIMEOUT_MINUTES: {{ .Values.config.incident.approvalTimeoutMinutes | quote }}
+  INCIDENT_POST_FIX_MONITORING_SECONDS: {{ .Values.config.incident.postFixMonitoringSeconds | quote }}
+
+  # Kubernetes settings
+  K8S_IN_CLUSTER: {{ .Values.config.kubernetes.inCluster | quote }}
+  K8S_API_TIMEOUT: {{ .Values.config.kubernetes.apiTimeout | quote }}
+
+  # Observability settings
+  OBS_LOG_FORMAT: {{ .Values.config.observability.logFormat | quote }}
+  OBS_LOG_LEVEL: {{ .Values.config.observability.logLevel | quote }}
+  OBS_PROMETHEUS_ENABLED: {{ .Values.config.observability.metricsEnabled | quote }}
+  OBS_PROMETHEUS_PORT: {{ .Values.config.observability.metricsPort | quote }}
+  OBS_TRACING_ENABLED: {{ .Values.config.observability.tracingEnabled | quote }}
+  OBS_LOKI_ENABLED: {{ .Values.config.observability.lokiEnabled | quote }}
+  OBS_LOKI_URL: {{ .Values.config.observability.lokiUrl | quote }}
+
+  # Ollama LLM settings
+  OLLAMA_BASE_URL: {{ .Values.ollama.baseUrl | quote }}
+  OLLAMA_MODEL: {{ .Values.ollama.model | quote }}
+  OLLAMA_TIMEOUT: {{ .Values.ollama.timeout | quote }}
+  OLLAMA_TEMPERATURE: {{ .Values.ollama.temperature | quote }}
+  OLLAMA_MAX_RETRIES: {{ .Values.ollama.maxRetries | quote }}
+
+  # GPU settings
+  GPU_ENABLED: {{ .Values.gpu.enabled | quote }}
+  GPU_COMPUTE_MODE: {{ .Values.gpu.computeMode | quote }}

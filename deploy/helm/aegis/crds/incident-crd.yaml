@@ -1,0 +1,353 @@
+# AEGIS Incident Custom Resource Definition
+# Tracks incidents, RCA results, fix proposals, and human approval workflow
+
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: incidents.aegis.io
+  labels:
+    app.kubernetes.io/name: aegis
+    app.kubernetes.io/component: crd
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.14.0
+spec:
+  group: aegis.io
+  names:
+    kind: Incident
+    listKind: IncidentList
+    plural: incidents
+    singular: incident
+    shortNames:
+      - inc
+      - aegis-inc
+  scope: Namespaced
+  versions:
+    - name: v1
+      served: true
+      storage: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          description: Incident represents a detected Kubernetes issue managed by AEGIS
+          required:
+            - spec
+          properties:
+            apiVersion:
+              type: string
+            kind:
+              type: string
+            metadata:
+              type: object
+            spec:
+              type: object
+              description: IncidentSpec defines the desired state of Incident
+              required:
+                - resourceRef
+              properties:
+                # Source of incident detection
+                source:
+                  type: string
+                  description: Source that detected the incident (k8sgpt, aegis-monitor)
+                  enum:
+                    - k8sgpt
+                    - aegis-monitor
+                    - manual
+                  default: k8sgpt
+
+                # Reference to the affected resource
+                resourceRef:
+                  type: object
+                  description: Reference to the affected Kubernetes resource
+                  required:
+                    - kind
+                    - name
+                  properties:
+                    kind:
+                      type: string
+                      description: Kind of the affected resource
+                    name:
+                      type: string
+                      description: Name of the affected resource
+                    namespace:
+                      type: string
+                      description: Namespace of the affected resource
+
+                # Detected errors
+                errors:
+                  type: array
+                  description: List of detected errors
+                  items:
+                    type: string
+
+                # K8sGPT analysis (if source is k8sgpt)
+                k8sgptAnalysis:
+                  type: string
+                  description: AI-generated analysis from K8sGPT
+
+                # Severity level
+                severity:
+                  type: string
+                  description: Incident severity level
+                  enum:
+                    - critical
+                    - high
+                    - medium
+                    - low
+                  default: medium
+
+                # RCA result from AEGIS agent
+                rcaResult:
+                  type: object
+                  description: Root cause analysis result
+                  properties:
+                    rootCause:
+                      type: string
+                      description: Identified root cause
+                    reasoning:
+                      type: string
+                      description: Explanation of the analysis
+                    confidenceScore:
+                      type: number
+                      format: float
+                      minimum: 0
+                      maximum: 1
+                      description: Confidence score (0.0 to 1.0)
+                    affectedComponents:
+                      type: array
+                      items:
+                        type: string
+                      description: List of affected components
+                    analysisSteps:
+                      type: array
+                      items:
+                        type: string
+                      description: Steps taken during analysis
+
+                # Proposed fix
+                fixProposal:
+                  type: object
+                  description: Proposed fix for the incident
+                  properties:
+                    fixType:
+                      type: string
+                      description: Type of fix
+                      enum:
+                        - config_change
+                        - scale
+                        - rollback
+                        - restart
+                        - resource_adjustment
+                        - patch
+                    description:
+                      type: string
+                      description: Human-readable description of the fix
+                    commands:
+                      type: array
+                      items:
+                        type: string
+                      description: kubectl commands to apply the fix
+                    manifests:
+                      type: object
+                      additionalProperties:
+                        type: string
+                      description: YAML manifests to apply (name -> content)
+                    patch:
+                      type: string
+                      description: JSON patch to apply
+                    confidenceScore:
+                      type: number
+                      format: float
+                      minimum: 0
+                      maximum: 1
+                      description: Confidence score for the fix
+                    risks:
+                      type: array
+                      items:
+                        type: string
+                      description: Potential risks of applying the fix
+                    estimatedDowntime:
+                      type: string
+                      description: Estimated downtime (e.g., "30s", "2m")
+
+                # Shadow verification result
+                shadowVerification:
+                  type: object
+                  description: Shadow environment verification result
+                  properties:
+                    shadowId:
+                      type: string
+                      description: ID of the shadow environment
+                    passed:
+                      type: boolean
+                      description: Whether verification passed
+                    healthScore:
+                      type: number
+                      format: float
+                      description: Health score from verification
+                    smokeTestPassed:
+                      type: boolean
+                      description: Whether smoke tests passed
+                    loadTestPassed:
+                      type: boolean
+                      description: Whether load tests passed
+                    logs:
+                      type: string
+                      description: Verification logs (truncated)
+                    verifiedAt:
+                      type: string
+                      format: date-time
+                      description: When verification completed
+
+                # ============================================================
+                # HUMAN-IN-THE-LOOP APPROVAL FIELDS
+                # ============================================================
+
+                approval:
+                  type: object
+                  description: Human approval workflow fields
+                  properties:
+                    required:
+                      type: boolean
+                      description: Whether human approval is required
+                      default: true
+                    status:
+                      type: string
+                      description: Approval status
+                      enum:
+                        - pending
+                        - approved
+                        - rejected
+                        - timeout
+                      default: pending
+                    approvedBy:
+                      type: string
+                      description: User who approved (kubectl user or CLI user)
+                    approvedAt:
+                      type: string
+                      format: date-time
+                      description: When approval was granted
+                    rejectedBy:
+                      type: string
+                      description: User who rejected
+                    rejectedAt:
+                      type: string
+                      format: date-time
+                      description: When rejection occurred
+                    rejectionReason:
+                      type: string
+                      description: Reason for rejection
+                    timeoutAt:
+                      type: string
+                      format: date-time
+                      description: When approval will timeout
+                    comment:
+                      type: string
+                      description: Approval/rejection comment
+
+            status:
+              type: object
+              description: IncidentStatus defines the observed state of Incident
+              properties:
+                phase:
+                  type: string
+                  description: Current phase of incident lifecycle
+                  enum:
+                    - Detected
+                    - Analyzing
+                    - AwaitingApproval
+                    - ApplyingFix
+                    - Monitoring
+                    - Resolved
+                    - Failed
+                    - Rejected
+                    - Timeout
+                  default: Detected
+
+                # Fix application status
+                fixApplied:
+                  type: boolean
+                  description: Whether the fix has been applied
+                  default: false
+                fixAppliedAt:
+                  type: string
+                  format: date-time
+                  description: When the fix was applied
+                fixError:
+                  type: string
+                  description: Error message if fix application failed
+
+                # Post-fix monitoring
+                monitoring:
+                  type: object
+                  description: Post-fix monitoring status
+                  properties:
+                    startedAt:
+                      type: string
+                      format: date-time
+                      description: When monitoring started
+                    duration:
+                      type: integer
+                      description: Monitoring duration in seconds
+                    newIncidentsDetected:
+                      type: boolean
+                      description: Whether new incidents were detected
+                    warningMessage:
+                      type: string
+                      description: Warning message if issues detected
+
+                # Timestamps
+                detectedAt:
+                  type: string
+                  format: date-time
+                  description: When the incident was detected
+                resolvedAt:
+                  type: string
+                  format: date-time
+                  description: When the incident was resolved
+
+                # History and conditions
+                conditions:
+                  type: array
+                  description: Conditions representing incident state
+                  items:
+                    type: object
+                    properties:
+                      type:
+                        type: string
+                      status:
+                        type: string
+                        enum: ["True", "False", "Unknown"]
+                      lastTransitionTime:
+                        type: string
+                        format: date-time
+                      reason:
+                        type: string
+                      message:
+                        type: string
+
+      # Subresources
+      subresources:
+        status: {}
+
+      # Additional columns for kubectl get
+      additionalPrinterColumns:
+        - name: Severity
+          type: string
+          jsonPath: .spec.severity
+          priority: 0
+        - name: Resource
+          type: string
+          jsonPath: .spec.resourceRef.kind
+          priority: 0
+        - name: Phase
+          type: string
+          jsonPath: .status.phase
+          priority: 0
+        - name: Approval
+          type: string
+          jsonPath: .spec.approval.status
+          priority: 0
+        - name: Age
+          type: date
+          jsonPath: .metadata.creationTimestamp
+          priority: 0

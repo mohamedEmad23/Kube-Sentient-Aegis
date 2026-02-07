@@ -1,0 +1,191 @@
+# Demo API Application
+# A simple FastAPI service that simulates a real-world API
+#
+# This deployment is intentionally set up to be "breakable" for demo scenarios.
+# The healthy version includes all required environment variables.
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: demo-api-config
+  namespace: production
+  labels:
+    app: demo-api
+    app.kubernetes.io/part-of: aegis-demo
+data:
+  LOG_LEVEL: "INFO"
+  WORKERS: "2"
+  APP_NAME: "AEGIS Demo API"
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: demo-api-secrets
+  namespace: production
+  labels:
+    app: demo-api
+type: Opaque
+stringData:
+  # This is a demo secret - in real scenarios, use external secrets
+  DATABASE_URL: "postgresql://demo:demo123@demo-db:5432/demoapp"  # pragma: allowlist secret - Demo credentials for local development only
+  REDIS_URL: "redis://demo-redis:6379/0"
+  API_KEY: "demo-api-key-not-for-production"  # pragma: allowlist secret - Demo API key for local testing only
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: demo-api
+  namespace: production
+  labels:
+    app: demo-api
+    app.kubernetes.io/name: demo-api
+    app.kubernetes.io/component: api
+    app.kubernetes.io/part-of: aegis-demo
+  annotations:
+    aegis.io/auto-remediate: "true"
+    aegis.io/severity-threshold: "medium"
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: demo-api
+  template:
+    metadata:
+      labels:
+        app: demo-api
+        version: v1
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8000"
+        prometheus.io/path: "/metrics"
+    spec:
+      containers:
+        - name: api
+          # Using a lightweight Python image
+          image: python:3.12-slim
+          imagePullPolicy: IfNotPresent
+          command:
+            - /bin/sh
+            - -c
+            - |
+              pip install fastapi uvicorn prometheus-client psycopg2-binary redis --quiet
+              mkdir -p /app
+              cat > /app/main.py << 'EOF'
+              from fastapi import FastAPI, HTTPException
+              from prometheus_client import Counter, Histogram, generate_latest
+              from fastapi.responses import PlainTextResponse
+              import os
+              import time
+              import random
+
+              app = FastAPI(title=os.getenv("APP_NAME", "Demo API"))
+
+              # Metrics
+              REQUEST_COUNT = Counter("http_requests_total", "Total HTTP requests", ["method", "endpoint", "status"])
+              REQUEST_LATENCY = Histogram("http_request_duration_seconds", "HTTP request latency", ["endpoint"])
+
+              # Validate required env vars on startup
+              required_vars = ["DATABASE_URL", "REDIS_URL"]
+              for var in required_vars:
+                  if not os.getenv(var):
+                      raise RuntimeError(f"Missing required environment variable: {var}")
+
+              @app.get("/")
+              async def root():
+                  REQUEST_COUNT.labels(method="GET", endpoint="/", status="200").inc()
+                  return {"status": "healthy", "app": os.getenv("APP_NAME")}
+
+              @app.get("/health")
+              async def health():
+                  return {"status": "ok", "timestamp": time.time()}
+
+              @app.get("/ready")
+              async def ready():
+                  # Simulate readiness check
+                  return {"ready": True, "database": "connected", "redis": "connected"}
+
+              @app.get("/api/items")
+              async def get_items():
+                  with REQUEST_LATENCY.labels(endpoint="/api/items").time():
+                      # Simulate database query
+                      time.sleep(random.uniform(0.01, 0.05))
+                      REQUEST_COUNT.labels(method="GET", endpoint="/api/items", status="200").inc()
+                      return {"items": [{"id": 1, "name": "Demo Item"}]}
+
+              @app.get("/metrics")
+              async def metrics():
+                  return PlainTextResponse(generate_latest(), media_type="text/plain")
+
+              if __name__ == "__main__":
+                  import uvicorn
+                  uvicorn.run(app, host="0.0.0.0", port=8000)
+              EOF
+              python /app/main.py
+          ports:
+            - containerPort: 8000
+              name: http
+              protocol: TCP
+          envFrom:
+            - configMapRef:
+                name: demo-api-config
+            - secretRef:
+                name: demo-api-secrets
+          resources:
+            requests:
+              memory: "128Mi"
+              cpu: "100m"
+            limits:
+              memory: "256Mi"
+              cpu: "500m"
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: 8000
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 3
+      restartPolicy: Always
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: demo-api
+  namespace: production
+  labels:
+    app: demo-api
+spec:
+  type: ClusterIP
+  ports:
+    - port: 80
+      targetPort: 8000
+      protocol: TCP
+      name: http
+  selector:
+    app: demo-api
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: demo-api-nodeport
+  namespace: production
+  labels:
+    app: demo-api
+spec:
+  type: NodePort
+  ports:
+    - port: 80
+      targetPort: 8000
+      nodePort: 30000
+      protocol: TCP
+      name: http
+  selector:
+    app: demo-api

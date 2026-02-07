@@ -1,0 +1,469 @@
+"""LangGraph state schemas for AEGIS agent workflow.
+
+Defines typed state structures for the multi-agent incident analysis workflow:
+- IncidentState: Main workflow state passed between agents
+- K8sGPTAnalysis: Structured K8sGPT output
+- RCAResult: Root Cause Analysis output
+- FixProposal: Solution generation output
+- VerificationPlan: Shadow verification planning output
+"""
+
+from dataclasses import dataclass, field
+from datetime import UTC, datetime
+from enum import Enum
+from typing import Annotated, Any, Literal
+
+from langchain_core.messages import AnyMessage
+from langgraph.graph.message import add_messages
+from pydantic import BaseModel, Field
+from typing_extensions import TypedDict
+
+
+# ============================================================================
+# Enums - Agent States & Severities
+# ============================================================================
+
+
+class AgentNode(str, Enum):
+    """Agent nodes in the LangGraph workflow."""
+
+    RCA = "rca_agent"
+    SOLUTION = "solution_agent"
+    VERIFIER = "verifier_agent"
+    END = "END"
+
+
+class IncidentSeverity(str, Enum):
+    """Incident severity levels."""
+
+    CRITICAL = "critical"
+    HIGH = "high"
+    MEDIUM = "medium"
+    LOW = "low"
+    INFO = "info"
+
+
+class FixType(str, Enum):
+    """Types of fixes that can be applied."""
+
+    CONFIG_CHANGE = "config_change"
+    RESTART = "restart"
+    SCALE = "scale"
+    ROLLBACK = "rollback"
+    PATCH = "patch"
+    MANUAL = "manual"
+
+
+class IncidentPriority(str, Enum):
+    """Incident priority levels for queue management.
+
+    P0 (Critical) - Service-wide outage, data loss risk
+    P1 (High) - Major feature broken, significant user impact
+    P2 (Medium) - Minor feature degradation
+    P3 (Low) - Performance issues, non-critical bugs
+    P4 (Info) - Informational, no immediate action needed
+    """
+
+    P0 = "p0"  # Critical
+    P1 = "p1"  # High
+    P2 = "p2"  # Medium
+    P3 = "p3"  # Low
+    P4 = "p4"  # Info
+
+    @classmethod
+    def from_severity(cls, severity: IncidentSeverity) -> "IncidentPriority":
+        """Map incident severity to priority.
+
+        Args:
+            severity: IncidentSeverity from RCA analysis
+
+        Returns:
+            IncidentPriority: Corresponding priority level
+        """
+        mapping = {
+            IncidentSeverity.CRITICAL: cls.P0,
+            IncidentSeverity.HIGH: cls.P1,
+            IncidentSeverity.MEDIUM: cls.P2,
+            IncidentSeverity.LOW: cls.P3,
+            IncidentSeverity.INFO: cls.P4,
+        }
+        return mapping.get(severity, cls.P3)
+
+
+# ============================================================================
+# Dataclasses - Retry & Rollback Metadata
+# ============================================================================
+
+
+@dataclass
+class RetryContext:
+    """Context for shadow verification retry logic."""
+
+    attempt: int = 1  # Current attempt (1-indexed)
+    max_retries: int = 3  # Maximum retry attempts
+    last_failure_reason: str | None = None  # Detailed failure context
+    backoff_seconds: float = 10.0  # Exponential backoff base
+
+    def should_retry(self) -> bool:
+        """Check if another retry is allowed."""
+        return self.attempt < self.max_retries
+
+    def next_backoff(self) -> float:
+        """Calculate next exponential backoff delay.
+
+        Returns:
+            Delay in seconds: 10s, 30s, 90s for attempts 1, 2, 3
+        """
+        return self.backoff_seconds * (3 ** (self.attempt - 1))
+
+
+@dataclass
+class RollbackMetadata:
+    """Metadata for production deployment rollback."""
+
+    pre_deployment_snapshot: dict[str, Any] = field(default_factory=dict)
+    deployment_timestamp: datetime | None = None
+    baseline_error_rate: float = 0.0  # Error rate before deployment
+    baseline_restart_count: int = 0  # Pod restarts before deployment
+    rollback_triggered: bool = False
+    rollback_reason: str | None = None
+    rollback_timestamp: datetime | None = None
+
+
+@dataclass
+class DriftReport:
+    """Environment drift detection between production and shadow."""
+
+    drifted: bool = False
+    severity: Literal["none", "low", "high"] = "none"
+    missing_resources: list[str] = field(default_factory=list)  # In prod, not shadow
+    extra_resources: list[str] = field(default_factory=list)  # In shadow, not prod
+    config_mismatches: list[dict[str, Any]] = field(default_factory=list)
+    timestamp: datetime = field(default_factory=lambda: datetime.now(UTC))
+
+    def to_dict(self) -> dict[str, Any]:
+        """Convert to dict for storage."""
+        return {
+            "drifted": self.drifted,
+            "severity": self.severity,
+            "missing_resources": self.missing_resources,
+            "extra_resources": self.extra_resources,
+            "config_mismatches": self.config_mismatches,
+            "timestamp": self.timestamp.isoformat(),
+        }
+
+
+# ============================================================================
+# Pydantic Models - Structured Agent Outputs
+# ============================================================================
+
+
+class K8sGPTError(BaseModel):
+    """Single error from K8sGPT analysis."""
+
+    model_config = {"populate_by_name": True}
+
+    text: str = Field(description="Error description", alias="Text")
+    kubernetes_doc: str | None = Field(
+        default=None,
+        description="Link to Kubernetes documentation",
+        alias="KubernetesDoc",
+    )
+    sensitive: list[dict[str, str]] | None = Field(
+        default=None,
+        description="Sensitive data detected (anonymized)",
+        alias="Sensitive",
+    )
+
+
+class K8sGPTResult(BaseModel):
+    """Result for a single Kubernetes resource from K8sGPT."""
+
+    model_config = {"populate_by_name": True}
+
+    kind: str = Field(description="Resource type (Pod, Deployment, etc.)")
+    name: str = Field(description="Resource name")
+    namespace: str | None = Field(default=None, description="Resource namespace")
+    error: list[K8sGPTError] = Field(description="List of errors detected")
+    parent_object: str | None = Field(
+        default=None, description="Parent resource if applicable", alias="parentObject"
+    )
+
+
+class K8sGPTAnalysis(BaseModel):
+    """Complete K8sGPT analysis output."""
+
+    status: str = Field(description="Analysis status (OK, Error)")
+    problems: int = Field(description="Number of problems detected")
+    results: list[K8sGPTResult] = Field(description="Analysis results per resource")
+    errors: list[str] | None = Field(default=None, description="Analysis errors")
+
+
+class RCAResult(BaseModel):
+    """Root Cause Analysis output from RCA agent."""
+
+    root_cause: str = Field(description="Primary root cause identified")
+    analysis_steps: list[str] = Field(
+        default_factory=list,
+        description="Step-by-step analysis performed by the agent",
+    )
+    evidence_summary: list[str] = Field(
+        default_factory=list,
+        description="Evidence summary with direct observations",
+    )
+    decision_rationale: str = Field(
+        default="",
+        description="Why this root cause was selected over alternatives",
+    )
+    contributing_factors: list[str] = Field(
+        default_factory=list,
+        description="Additional factors contributing to the incident",
+    )
+    severity: IncidentSeverity = Field(description="Assessed incident severity")
+    confidence_score: float = Field(
+        ge=0.0,
+        le=1.0,
+        description="Confidence in the analysis (0.0-1.0)",
+    )
+    reasoning: str = Field(description="Detailed reasoning for the analysis")
+    affected_components: list[str] = Field(
+        default_factory=list,
+        description="List of affected system components",
+    )
+    timestamp: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+
+class FixProposal(BaseModel):
+    """Solution proposal from Solution agent."""
+
+    fix_type: FixType = Field(description="Type of fix proposed")
+    description: str = Field(description="Human-readable fix description")
+    analysis_steps: list[str] = Field(
+        default_factory=list,
+        description="Step-by-step reasoning for the proposed fix",
+    )
+    decision_rationale: str = Field(
+        default="",
+        description="Why this fix is the safest and most effective option",
+    )
+    commands: list[str] = Field(
+        default_factory=list,
+        description="kubectl commands to execute",
+    )
+    manifests: dict[str, str] = Field(
+        default_factory=dict,
+        description="YAML manifests to apply (filename: content)",
+    )
+    rollback_commands: list[str] = Field(
+        default_factory=list,
+        description="Commands to rollback if fix fails",
+    )
+    estimated_downtime: str | None = Field(
+        default=None,
+        description="Estimated downtime (e.g., '5 minutes', 'zero-downtime')",
+    )
+    risks: list[str] = Field(
+        default_factory=list,
+        description="Potential risks of applying this fix",
+    )
+    prerequisites: list[str] = Field(
+        default_factory=list,
+        description="Prerequisites before applying fix",
+    )
+    confidence_score: float = Field(
+        ge=0.0,
+        le=1.0,
+        description="Confidence in the proposed solution",
+    )
+
+
+class LoadTestConfig(BaseModel):
+    """Structured load testing configuration."""
+
+    users: int = Field(ge=1, description="Number of concurrent users")
+    spawn_rate: int = Field(ge=1, description="User spawn rate per second")
+    duration_seconds: int = Field(ge=10, description="Total test duration in seconds")
+    target_url: str = Field(description="Target URL for load test")
+
+
+class VerificationPlan(BaseModel):
+    """Verification plan from Verifier agent."""
+
+    verification_type: Literal["shadow", "canary", "blue-green", "manual"] = Field(
+        description="Type of verification to perform"
+    )
+    analysis_steps: list[str] = Field(
+        default_factory=list,
+        description="Step-by-step reasoning for the verification plan",
+    )
+    decision_rationale: str = Field(
+        default="",
+        description="Why this verification strategy was chosen",
+    )
+    test_scenarios: list[str] = Field(
+        description="Test scenarios to execute in shadow environment",
+    )
+    success_criteria: list[str] = Field(
+        description="Criteria for successful verification",
+    )
+    duration: int = Field(
+        ge=60,
+        description="Expected verification duration in seconds",
+    )
+    load_test_config: LoadTestConfig | None = Field(
+        default=None,
+        description="Locust load test configuration",
+    )
+    security_checks: list[str] = Field(
+        default_factory=list,
+        description="Security checks to perform during verification",
+    )
+    rollback_on_failure: bool = Field(
+        default=True,
+        description="Automatically rollback if verification fails",
+    )
+    approval_required: bool = Field(
+        default=False,
+        description="Require human approval before production",
+    )
+
+
+# ============================================================================
+# TypedDict - LangGraph State
+# ============================================================================
+
+
+class IncidentState(TypedDict):
+    """Shared state across all agents in the LangGraph workflow.
+
+    This state is passed between agents and updated via Command objects.
+    Uses Annotated for automatic message aggregation via add_messages reducer.
+    """
+
+    # ========== Input Context ==========
+    resource_type: str  # Pod, Deployment, Service, etc.
+    resource_name: str  # Name of the resource
+    namespace: str  # Kubernetes namespace
+
+    # ========== K8sGPT Analysis ==========
+    k8sgpt_raw: dict[str, Any] | None  # Raw K8sGPT JSON output
+    k8sgpt_analysis: K8sGPTAnalysis | None  # Parsed K8sGPT analysis
+
+    # ========== Kubernetes Context ==========
+    kubectl_logs: str | None  # Pod logs from kubectl
+    kubectl_describe: str | None  # kubectl describe output
+    kubectl_events: str | None  # Recent events for the resource
+
+    # ========== Agent Outputs ==========
+    rca_result: RCAResult | None  # Root Cause Analysis
+    fix_proposal: FixProposal | None  # Proposed solution
+    verification_plan: VerificationPlan | None  # Verification strategy
+
+    # ========== Workflow State ==========
+    current_agent: AgentNode  # Current agent in workflow
+    error: str | None  # Error message if workflow fails
+    no_problems: bool | None  # True if K8sGPT found no problems (healthy resource)
+    completed_at: datetime | None  # Workflow completion timestamp
+
+    # ========== Agent Communication ==========
+    # Messages aggregated across agents using add_messages reducer
+    messages: Annotated[list[AnyMessage], add_messages]
+
+    # ========== LLM Trace ==========
+    llm_trace: dict[str, dict[str, str]] | None  # Provider/model per agent
+
+    # ========== Optional: Shadow Verification Results ==========
+    shadow_env_id: str | None  # Shadow environment identifier
+    shadow_test_passed: bool | None  # Shadow verification result
+    shadow_logs: str | None  # Shadow environment logs
+
+    # ========== Prometheus Metrics Context (Dashboard Integration) ==========
+    prometheus_metrics: dict[str, Any] | None  # Metrics from Prometheus query client
+    grafana_dashboard_url: str | None  # Generated Grafana dashboard URL
+
+    # ========== Enhanced Incident Management ==========
+    incident_id: str | None  # Unique incident identifier for correlation
+    priority: IncidentPriority | None  # Priority level (P0-P4)
+    retry_context: dict[str, Any] | None  # RetryContext serialized
+    rollback_metadata: dict[str, Any] | None  # RollbackMetadata serialized
+    drift_report: dict[str, Any] | None  # DriftReport serialized
+    production_approved: bool | None  # Human approval for production deployment
+    production_deployed_at: datetime | None  # When fix was applied to production
+
+
+# ============================================================================
+# Helper Functions
+# ============================================================================
+
+
+def create_initial_state(
+    resource_type: str,
+    resource_name: str,
+    namespace: str = "default",
+) -> IncidentState:
+    """Create initial incident state for workflow.
+
+    Args:
+        resource_type: Type of Kubernetes resource (Pod, Deployment, etc.)
+        resource_name: Name of the resource
+        namespace: Kubernetes namespace (default: "default")
+
+    Returns:
+        IncidentState: Initial state with basic context
+
+    Example:
+        >>> state = create_initial_state("Pod", "nginx-crashloop")
+        >>> graph.invoke(state, config={"thread_id": "inc-001"})
+    """
+    return IncidentState(
+        resource_type=resource_type,
+        resource_name=resource_name,
+        namespace=namespace,
+        k8sgpt_raw=None,
+        k8sgpt_analysis=None,
+        kubectl_logs=None,
+        kubectl_describe=None,
+        kubectl_events=None,
+        rca_result=None,
+        fix_proposal=None,
+        verification_plan=None,
+        current_agent=AgentNode.RCA,
+        error=None,
+        no_problems=None,
+        completed_at=None,
+        messages=[],
+        llm_trace={},
+        shadow_env_id=None,
+        shadow_test_passed=None,
+        shadow_logs=None,
+        prometheus_metrics=None,
+        grafana_dashboard_url=None,
+        # Enhanced fields
+        incident_id=None,
+        priority=None,
+        retry_context=None,
+        rollback_metadata=None,
+        drift_report=None,
+        production_approved=None,
+        production_deployed_at=None,
+    )
+
+
+__all__ = [
+    "AgentNode",
+    "DriftReport",
+    "FixProposal",
+    "FixType",
+    "IncidentPriority",
+    "IncidentSeverity",
+    "IncidentState",
+    "K8sGPTAnalysis",
+    "K8sGPTError",
+    "K8sGPTResult",
+    "LoadTestConfig",
+    "RCAResult",
+    "RetryContext",
+    "RollbackMetadata",
+    "VerificationPlan",
+    "create_initial_state",
+]

@@ -1,0 +1,224 @@
+# AEGIS Helm Chart Values
+# Default configuration values for the AEGIS operator
+
+# ============================================================================
+# Global Settings
+# ============================================================================
+
+# Override the chart name
+nameOverride: ""
+fullnameOverride: ""
+
+# Namespace configuration
+namespace:
+  # Create the namespace if it doesn't exist
+  create: true
+  # Namespace name (default: aegis-system)
+  name: aegis-system
+
+# ============================================================================
+# Operator Deployment
+# ============================================================================
+
+operator:
+  # Number of operator replicas (recommend 1 for leader election)
+  replicaCount: 1
+
+  image:
+    repository: aegis-operator
+    pullPolicy: IfNotPresent
+    # Overrides the image tag (default: chart appVersion)
+    tag: ""
+
+  # Image pull secrets for private registries
+  imagePullSecrets: []
+
+  # Service account configuration
+  serviceAccount:
+    # Create a service account
+    create: true
+    # Annotations to add to the service account
+    annotations: {}
+    # Name override (default: aegis-operator)
+    name: ""
+
+  # Pod annotations
+  podAnnotations:
+    prometheus.io/scrape: "true"
+    prometheus.io/port: "8080"
+    prometheus.io/path: "/metrics"
+
+  # Pod security context
+  podSecurityContext:
+    runAsNonRoot: true
+    runAsUser: 1000
+    fsGroup: 1000
+
+  # Container security context
+  securityContext:
+    allowPrivilegeEscalation: false
+    readOnlyRootFilesystem: true
+    capabilities:
+      drop:
+        - ALL
+
+  # Resource limits and requests
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+
+  # Node selector for scheduling
+  nodeSelector: {}
+
+  # Tolerations for scheduling
+  tolerations: []
+
+  # Affinity rules for scheduling
+  affinity: {}
+
+  # Liveness probe configuration
+  livenessProbe:
+    httpGet:
+      path: /healthz
+      port: health
+    initialDelaySeconds: 10
+    periodSeconds: 30
+
+  # Readiness probe configuration
+  readinessProbe:
+    httpGet:
+      path: /readyz
+      port: health
+    initialDelaySeconds: 5
+    periodSeconds: 10
+
+# ============================================================================
+# AEGIS Configuration
+# ============================================================================
+
+config:
+  # Environment: development, staging, production
+  environment: production
+
+  # Enable debug logging
+  debug: false
+
+  # Shadow verification settings
+  shadow:
+    # Enable shadow environment verification
+    enabled: true
+    # Shadow runtime (vcluster recommended)
+    runtime: vcluster
+    # Namespace prefix for host shadow namespaces
+    namespacePrefix: aegis-shadow-
+    # Maximum concurrent shadow environments
+    maxConcurrent: 3
+    # Default verification timeout (seconds)
+    verificationTimeout: 300
+    # Auto-cleanup shadow environments after verification
+    autoCleanup: true
+
+  # Incident management settings
+  incident:
+    # Enable automatic fix application (requires human approval)
+    autoFixEnabled: false
+    # Approval timeout in minutes (auto-reject after timeout)
+    approvalTimeoutMinutes: 15
+    # Post-fix monitoring duration in seconds
+    postFixMonitoringSeconds: 300
+
+  # Kubernetes settings
+  kubernetes:
+    # Run with in-cluster configuration
+    inCluster: true
+    # API request timeout (seconds)
+    apiTimeout: 30
+
+  # Observability settings
+  observability:
+    # Log format: json or text
+    logFormat: json
+    # Log level: DEBUG, INFO, WARNING, ERROR
+    logLevel: INFO
+    # Enable Prometheus metrics
+    metricsEnabled: true
+    # Prometheus metrics port
+    metricsPort: 8080
+    # Enable OpenTelemetry tracing
+    tracingEnabled: false
+    # Enable Loki log aggregation for RCA context
+    lokiEnabled: false
+    # Loki base URL (e.g., http://loki:3100)
+    lokiUrl: ""
+
+# ============================================================================
+# LLM / Ollama Configuration
+# ============================================================================
+
+ollama:
+  # Ollama service URL
+  # Default assumes Ollama runs in the same namespace
+  baseUrl: "http://ollama.aegis-system.svc.cluster.local:11434"
+
+  # Default LLM model for RCA and solution generation
+  model: "llama3.2"
+
+  # Request timeout (seconds)
+  timeout: 120
+
+  # LLM temperature (0.0 = deterministic, 1.0 = creative)
+  temperature: 0.1
+
+  # Maximum retries for API calls
+  maxRetries: 3
+
+# ============================================================================
+# K8sGPT Integration
+# ============================================================================
+
+k8sgpt:
+  # K8sGPT integration is DISABLED by default
+  # K8sGPT must be installed as a prerequisite:
+  #   helm install k8sgpt k8sgpt/k8sgpt-operator
+  enabled: false
+
+# ============================================================================
+# RBAC Configuration
+# ============================================================================
+
+rbac:
+  # Create RBAC resources (ClusterRole, ClusterRoleBinding)
+  create: true
+
+# ============================================================================
+# Service Configuration
+# ============================================================================
+
+service:
+  # Service type: ClusterIP, NodePort, LoadBalancer
+  type: ClusterIP
+
+  # Metrics port
+  metricsPort: 8080
+
+  # Health check port
+  healthPort: 8000
+
+# ============================================================================
+# GPU Support (Auto-Detection)
+# ============================================================================
+
+gpu:
+  # Enable GPU support for LLM inference
+  # Auto-detected via node labels: nvidia.com/gpu or amd.com/gpu
+  enabled: false
+  # Compute mode: auto, gpu, cpu
+  computeMode: auto
+
+  # GPU resource requests (only if gpu.enabled is true)
+  resources: {}
+    # nvidia.com/gpu: 1

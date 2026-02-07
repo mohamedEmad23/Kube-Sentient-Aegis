@@ -1,0 +1,7 @@
+# Default ownership: all repository files require owner review
+* @mohamedEmad23
+
+# Critical paths
+src/aegis/security/ @mohamedEmad23
+src/aegis/k8s_operator/ @mohamedEmad23
+deploy/ @mohamedEmad23

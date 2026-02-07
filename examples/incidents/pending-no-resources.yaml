@@ -1,0 +1,57 @@
+# INCIDENT: Pending Pod - Insufficient Resources
+#
+# Scenario: Deploy demo-api requesting more resources than available
+# Expected: Pod stuck in Pending state
+#
+# AEGIS Expected Detection:
+#   Root Cause: Insufficient CPU/memory in cluster to schedule pod
+#   Severity: MEDIUM
+#   Fix: Reduce resource requests or add more nodes
+#
+# Usage:
+#   kubectl apply -f pending-no-resources.yaml
+#   kubectl get pods -n production -w  # Watch Pending status
+#   kubectl describe pod demo-api-xxx  # See scheduling failure
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: demo-api
+  namespace: production
+  labels:
+    app: demo-api
+    incident-type: pending
+  annotations:
+    aegis.io/incident-scenario: "pending-no-resources"
+    aegis.io/expected-fix: "Reduce resource requests to cpu:100m, memory:128Mi"
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: demo-api
+  template:
+    metadata:
+      labels:
+        app: demo-api
+        version: v1-greedy
+    spec:
+      containers:
+        - name: api
+          image: python:3.12-slim
+          imagePullPolicy: IfNotPresent
+          command:
+            - python
+            - -c
+            - "import time; time.sleep(3600)"
+          ports:
+            - containerPort: 8000
+              name: http
+          resources:
+            requests:
+              # INTENTIONALLY EXCESSIVE: More than Kind cluster has available
+              memory: "64Gi"
+              cpu: "32"
+            limits:
+              memory: "128Gi"
+              cpu: "64"
+      restartPolicy: Always

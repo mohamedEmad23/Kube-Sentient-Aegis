@@ -1,0 +1,23 @@
+# K8sGPT Operator Helm Values for AEGIS Integration
+#
+# NOTE:
+# - The Helm chart configures the operator only.
+# - AI backend settings (Ollama baseUrl, model, secret) live in the K8sGPT CR:
+#   deploy/k8sgpt/k8sgpt-cr.yaml
+#
+# Installation:
+#   helm repo add k8sgpt https://charts.k8sgpt.ai/
+#   helm upgrade --install k8sgpt-operator k8sgpt/k8sgpt-operator \
+#     -n k8sgpt-system --create-namespace -f k8sgpt-values.yaml
+
+interplex:
+  enabled: false
+
+serviceMonitor:
+  enabled: false
+
+grafanaDashboard:
+  enabled: false
+
+controllerManager:
+  replicas: 1

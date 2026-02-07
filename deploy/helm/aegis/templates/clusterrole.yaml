@@ -1,0 +1,121 @@
+{{- if .Values.rbac.create }}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "aegis.fullname" . }}
+  labels:
+    {{- include "aegis.labels" . | nindent 4 }}
+rules:
+  # Core Kubernetes resources - read access for monitoring
+  - apiGroups: [""]
+    resources:
+      - pods
+      - pods/log
+      - services
+      - endpoints
+      - configmaps
+      - events
+      - namespaces
+      - persistentvolumeclaims
+      - nodes
+    verbs: ["get", "list", "watch", "create", "patch", "update"]
+
+  # Secrets - scoped to vCluster kubeconfig
+  - apiGroups: [""]
+    resources:
+      - secrets
+    resourceNames:
+      - vc-shadow-kubeconfig
+    verbs: ["get"]
+
+  # Secrets - allow reading in shadow namespaces
+  - apiGroups: [""]
+    resources:
+      - secrets
+    verbs: ["get"]
+
+  # Pods - CRUD for shadow environments
+  - apiGroups: [""]
+    resources:
+      - pods
+    verbs: ["get", "list", "watch", "create", "delete", "patch"]
+
+  # Pods/exec - required for kubectl exec
+  - apiGroups: [""]
+    resources:
+      - pods/exec
+    verbs: ["create"]
+
+  # Apps resources - for deployments, replicasets, etc.
+  - apiGroups: ["apps"]
+    resources:
+      - deployments
+      - replicasets
+      - statefulsets
+      - daemonsets
+    verbs: ["get", "list", "watch", "patch", "update"]
+
+  # Batch resources - for jobs and cronjobs
+  - apiGroups: ["batch"]
+    resources:
+      - jobs
+      - cronjobs
+    verbs: ["get", "list", "watch", "create", "delete", "patch"]
+
+  # Networking resources
+  - apiGroups: ["networking.k8s.io"]
+    resources:
+      - ingresses
+      - networkpolicies
+    verbs: ["get", "list", "watch", "create", "delete"]
+
+  # Resource quotas for shadow environments
+  - apiGroups: [""]
+    resources:
+      - resourcequotas
+    verbs: ["get", "list", "watch", "create", "delete"]
+
+  # CRD access
+  - apiGroups: ["apiextensions.k8s.io"]
+    resources:
+      - customresourcedefinitions
+    verbs: ["get", "list", "watch"]
+
+  # K8sGPT Results
+  - apiGroups: ["core.k8sgpt.ai"]
+    resources:
+      - results
+    verbs: ["get", "list", "watch", "patch", "update"]
+
+  # AEGIS Custom Resources
+  - apiGroups: ["aegis.io"]
+    resources:
+      - incidents
+      - shadowenvironments
+      - remediations
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+
+  # AEGIS Incident status subresource
+  - apiGroups: ["aegis.io"]
+    resources:
+      - incidents/status
+    verbs: ["get", "update", "patch"]
+
+  # Kopf peering
+  - apiGroups: ["kopf.dev"]
+    resources:
+      - clusterkopfpeerings
+    verbs: ["get", "list", "watch", "create", "update", "patch"]
+
+  # Events for operator actions
+  - apiGroups: [""]
+    resources:
+      - events
+    verbs: ["create", "patch"]
+
+  # Namespaces for shadow environment creation
+  - apiGroups: [""]
+    resources:
+      - namespaces
+    verbs: ["get", "list", "watch", "create", "delete", "patch", "update"]
+{{- end }}

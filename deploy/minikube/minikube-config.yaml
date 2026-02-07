@@ -1,0 +1,37 @@
+# Minikube Configuration for AEGIS Development
+# Optimized for 40GB RAM / 8 CPU host (using 60% = 24GB RAM, 5 CPUs)
+#
+# IMPORTANT: Always use --embed-certs=true to avoid certificate file path issues
+# in Docker containers.
+#
+# Start cluster:
+#   minikube start --profile=aegis \
+#     --driver=docker \
+#     --cpus=5 \
+#     --memory=24576 \
+#     --disk-size=50g \
+#     --kubernetes-version=v1.30.0 \
+#     --embed-certs=true \
+#     --addons=metrics-server,ingress \
+#     --extra-config=apiserver.service-node-port-range=1-65535
+
+profile: aegis
+
+resources:
+  cpus: 5
+  memory: 24576  # 24GB in MB
+
+kubernetes-version: v1.30.0
+container-runtime: docker
+driver: docker
+
+addons:
+  - metrics-server
+  - ingress
+
+extra-config:
+  apiserver.enable-admission-plugins: "NamespaceLifecycle,LimitRanger,ServiceAccount,DefaultStorageClass,DefaultTolerationSeconds,NodeRestriction,MutatingAdmissionWebhook,ValidatingAdmissionWebhook,ResourceQuota"
+  apiserver.service-node-port-range: "1-65535"
+
+# Network configuration
+# Run `minikube tunnel` in separate terminal for LoadBalancer support
