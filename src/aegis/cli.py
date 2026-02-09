@@ -114,6 +114,21 @@ def _as_shadow_error(
     )
 
 
+def _extract_shadow_id_from_error(payload: dict[str, Any] | None) -> str | None:
+    """Extract shadow ID from a structured shadow error payload."""
+    if not payload:
+        return None
+    details = payload.get("details")
+    if not isinstance(details, dict):
+        return None
+    shadow_id = details.get("shadow_id")
+    if isinstance(shadow_id, str):
+        cleaned = shadow_id.strip()
+        if cleaned:
+            return cleaned
+    return None
+
+
 def _print_shadow_error_panel(
     console: Console,
     error: Exception | str,
@@ -610,6 +625,8 @@ def _run_shadow_verification(
                 phase="cli_shadow_verification",
             )
             log.error("shadow_verification_failed_cli", error=shadow_error.to_dict())
+            shadow_error_payload = shadow_error.to_dict()
+            shadow_id = _extract_shadow_id_from_error(shadow_error_payload)
             _print_shadow_error_panel(
                 console,
                 shadow_error,
@@ -618,7 +635,7 @@ def _run_shadow_verification(
                 title="Shadow Verification Failed",
             )
             console.print()
-            return None, False, None, None, shadow_error.to_dict()
+            return shadow_id, False, None, None, shadow_error_payload
 
     return shadow_id, passed, logs, security_results, error_result
 
@@ -763,7 +780,11 @@ def _maybe_run_shadow_verification(
             console.print()
         else:
             status = "[bold green]PASSED[/bold green]" if passed else "[bold red]FAILED[/bold red]"
-            details = f"[bold]Shadow ID:[/bold] {shadow_id}\n[bold]Result:[/bold] {status}"
+            display_shadow_id = shadow_id or _extract_shadow_id_from_error(shadow_error)
+            details = (
+                f"[bold]Shadow ID:[/bold] {display_shadow_id or 'N/A'}\n"
+                f"[bold]Result:[/bold] {status}"
+            )
             if shadow_error:
                 details += (
                     "\n\n[bold red]Structured Error:[/bold red]\n"
@@ -2797,6 +2818,8 @@ def config(
   Max Retries: {settings.ollama.max_retries}
 
 [bold]Kubernetes[/bold]
+  Context: {settings.kubernetes.context}
+  Kubeconfig: {settings.kubernetes.kubeconfig_path}
   Namespace: {settings.kubernetes.namespace}
   In-Cluster: {settings.kubernetes.in_cluster}
   API Timeout: {settings.kubernetes.api_timeout}s

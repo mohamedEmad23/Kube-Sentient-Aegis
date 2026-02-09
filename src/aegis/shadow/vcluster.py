@@ -27,13 +27,40 @@ class VClusterResult:
 class VClusterManager:
     """Thin wrapper around the vCluster CLI."""
 
-    def __init__(self, template_path: Path | None = None) -> None:
+    def __init__(
+        self,
+        template_path: Path | None = None,
+        *,
+        kubeconfig_path: str | Path | None = None,
+        context: str | None = None,
+    ) -> None:
         self.template_path = Path(template_path) if template_path else None
+        self.kubeconfig_path = self._normalize_kubeconfig_path(kubeconfig_path)
+        self.context = context.strip() if context and context.strip() else None
         self.cli_path = shutil.which("vcluster")
 
     def is_installed(self) -> bool:
         """Check if vcluster binary is available."""
         return self.cli_path is not None
+
+    @staticmethod
+    def _normalize_kubeconfig_path(value: str | Path | None) -> str | None:
+        """Normalize kubeconfig path values from settings/env vars."""
+        if not value:
+            return None
+        raw = str(value).strip()
+        if not raw:
+            return None
+        expanded = Path(os.path.expandvars(raw)).expanduser()
+        normalized = str(expanded).strip()
+        return normalized or None
+
+    def _apply_global_flags(self, cmd: list[str]) -> list[str]:
+        """Apply global vcluster CLI flags for deterministic cluster selection."""
+        command = list(cmd)
+        if self.context:
+            command.extend(["--context", self.context])
+        return command
 
     def _run(self, args: list[str]) -> VClusterResult:
         """Run vcluster command and return result."""
@@ -43,6 +70,8 @@ class VClusterManager:
         """Run vcluster command asynchronously and return result."""
         # Pass current environment to subprocess to ensure KUBECONFIG is inherited
         env = os.environ.copy()
+        if self.kubeconfig_path:
+            env["KUBECONFIG"] = self.kubeconfig_path
 
         process = await asyncio.create_subprocess_exec(
             *args,
@@ -83,6 +112,7 @@ class VClusterManager:
 
         # We handle connection manually via 'connect --print'
         cmd.append("--connect=false")
+        cmd = self._apply_global_flags(cmd)
 
         log.info(f"Creating vCluster: {' '.join(cmd)}")
         result = self._run(cmd)
@@ -103,6 +133,8 @@ class VClusterManager:
                     "shadow_id": name,
                     "namespace": namespace,
                     "returncode": result.returncode,
+                    "kubeconfig_path": self.kubeconfig_path,
+                    "context": self.context,
                 },
             )
 
@@ -130,6 +162,7 @@ class VClusterManager:
             "--print",
             "--silent",  # Suppress logs in stdout, we only want the yaml
         ]
+        cmd = self._apply_global_flags(cmd)
         result = self._run(cmd)
         if result.returncode != 0:
             log.error(
@@ -147,6 +180,8 @@ class VClusterManager:
                     "shadow_id": name,
                     "namespace": namespace,
                     "returncode": result.returncode,
+                    "kubeconfig_path": self.kubeconfig_path,
+                    "context": self.context,
                 },
             )
 
@@ -174,6 +209,7 @@ class VClusterManager:
             )
 
         cmd = [self.cli_path or "vcluster", "delete", name, "--namespace", namespace]
+        cmd = self._apply_global_flags(cmd)
         result = self._run(cmd)
         if result.returncode != 0:
             raise ShadowWorkflowError(
@@ -185,6 +221,8 @@ class VClusterManager:
                     "shadow_id": name,
                     "namespace": namespace,
                     "returncode": result.returncode,
+                    "kubeconfig_path": self.kubeconfig_path,
+                    "context": self.context,
                 },
             )
         return result
